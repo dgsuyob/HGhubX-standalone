@@ -52,7 +52,7 @@ export function Modal({ open, onClose, children, width = 340 }: { open: boolean;
   return (
     <div className="absolute inset-0 z-[55] flex items-center justify-center p-6">
       <div className={`absolute inset-0 bg-black/65 backdrop-blur-sm ${open ? "a-fade" : "opacity-0 transition-opacity"}`} onClick={onClose} />
-      <div className={`relative bg-s3 rounded-(--r-lg) elev-3 ${open ? "a-scale-in" : "opacity-0 scale-90 transition-all"}`} style={{ width, maxWidth: "100%" }}>
+      <div role="dialog" aria-modal="true" aria-label="对话框" className={`relative bg-s3 rounded-(--r-lg) elev-3 ${open ? "a-scale-in" : "opacity-0 scale-90 transition-all"}`} style={{ width, maxWidth: "100%" }}>
         {children}
       </div>
     </div>

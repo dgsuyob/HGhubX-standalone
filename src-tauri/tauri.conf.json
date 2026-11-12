@@ -33,7 +33,6 @@
   },
   "bundle": {
     "active": true,
-    "resources": ["resources/demo.mp4"],
     "targets": [
       "nsis"
     ],

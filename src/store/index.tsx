@@ -178,8 +178,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const p = persisted.data;
   const sourceRef = useRef(EMPTY_SOURCE);
   const setP = useCallback((change: Persist | ((old: Persist) => Persist)) => {
-    setPersisted(old => ({ ...old, data: typeof change === "function" ? change(old.data) : change }));
-  }, []);
+    const expectedSource = persisted.sourceId;
+    setPersisted(old => old.sourceId !== expectedSource ? old : ({ ...old, data: typeof change === "function" ? change(old.data) : change }));
+  }, [persisted.sourceId]);
   const [theme, setThemeState] = useState<Theme>(readTheme);
   const [tab, setTabRaw] = useState<Tab>("home");
   const [stack, setStack] = useState<Page[]>([]);
@@ -211,10 +212,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const selectSource = useCallback((next: GateState) => {
     const key = next.id || EMPTY_SOURCE;
+    const wasConfigured = sourceRef.current !== EMPTY_SOURCE;
     sourceRef.current = key;
     setPersisted(old => old.sourceId === key ? old : { sourceId: key, data: loadPersist(key) });
-    setGate(next); setSiteBase(next.base); setUser(null); setStack([]); setTabRaw("home"); setLoginOpen(false);
-    setLineEpoch(n => n + 1);
+    setGate(next); setGateError(""); setSiteBase(next.base); setUser(null); setStack([]); setTabRaw("home"); setLoginOpen(false);
+    if (wasConfigured) setLineEpoch(n => n + 1);
   }, []);
 
   const applyBoot = useCallback((r: BootInfo) => {
@@ -225,8 +227,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setPersisted(old => old.sourceId === key ? old : { sourceId: key, data: loadPersist(key) });
       setGate(r.gate);
     }
-    // 兼容旧壳（无 gate_state / boot 不带 gate）：有 base 即视为已激活，避免老用户被门牌页挡住。
-    else if (r.base) setGate({ base: r.base, adapter: "edge_v1", activated: true });
     setSiteBase(r.base || r.gate?.base || "");
     if (typeof r.strict_security === "boolean") {
       setStrictSecurityState(r.strict_security);
@@ -249,8 +249,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       .catch(() => {
         if (!alive) return;
         setGateReady(true);
-        // 兼容旧壳：gate_state 不存在时仍尝试 boot，避免直接卡死
-        api.boot().then((r) => { if (alive) applyBoot(r); }).catch(() => {});
+        setGateError("无法读取媒体库配置，请重新启动或安装完整的预览构建");
       });
     return () => { alive = false; };
   }, [applyBoot]);
@@ -309,7 +308,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return { ...s, likes: on ? [id, ...s.likes] : s.likes.filter((x) => x !== id) };
     });
     return on;
-  }, []);
+  }, [setP]);
   const toggleFavLocal = useCallback((id: number) => {
     let on = false;
     setP((s) => {
@@ -317,7 +316,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return { ...s, favs: on ? [id, ...s.favs] : s.favs.filter((x) => x !== id) };
     });
     return on;
-  }, []);
+  }, [setP]);
   const toggleFollowLocal = useCallback((uid: number) => {
     let on = false;
     setP((s) => {
@@ -325,7 +324,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return { ...s, follows: on ? [uid, ...s.follows] : s.follows.filter((x) => x !== uid) };
     });
     return on;
-  }, []);
+  }, [setP]);
   const addHistory = useCallback((id: number, ep?: number, t?: number, dur?: number) => {
     if (!id) return;
     setP((s) => {
@@ -340,14 +339,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       };
       return { ...s, history: [entry, ...s.history.filter((x) => x.id !== id)].slice(0, 80) };
     });
-  }, []);
-  const clearHistory = useCallback(() => setP((s) => ({ ...s, history: [] })), []);
+  }, [setP]);
+  const clearHistory = useCallback(() => setP((s) => ({ ...s, history: [] })), [setP]);
   const addSearch = useCallback((q: string) => {
     const t = q.trim();
     if (!t) return;
     setP((s) => ({ ...s, searchHist: [t, ...s.searchHist.filter((x) => x !== t)].slice(0, 12) }));
-  }, []);
-  const clearSearchHist = useCallback(() => setP((s) => ({ ...s, searchHist: [] })), []);
+  }, [setP]);
+  const clearSearchHist = useCallback(() => setP((s) => ({ ...s, searchHist: [] })), [setP]);
 
   const logout = useCallback(async () => {
     try { await api.logout(); } catch { /* ignore */ }
@@ -371,20 +370,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const setMuted = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setP((s) => ({ ...s, muted: typeof v === "function" ? v(s.muted) : v }));
-  }, []);
+  }, [setP]);
   const setMuteOnStartup = useCallback((on: boolean) => {
     setP((s) => ({ ...s, muteOnStartup: on }));
-  }, []);
+  }, [setP]);
   const setSwipeEp = useCallback((on: boolean) => {
     setP((s) => ({ ...s, swipeEp: on }));
-  }, []);
+  }, [setP]);
   const setPreferHevc = useCallback((on: boolean) => {
     setP((s) => ({ ...s, preferHevc: on }));
-  }, []);
+  }, [setP]);
   const setVolume = useCallback((v: number) => {
     const volume = Math.max(0, Math.min(1, v));
     setP((s) => ({ ...s, volume, muted: volume === 0 }));
-  }, []);
+  }, [setP]);
 
   const value = useMemo<Store>(() => ({
     platform: envPlatform,

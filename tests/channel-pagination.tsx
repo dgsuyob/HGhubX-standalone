@@ -46,7 +46,7 @@ Object.assign(window, {
   channelPaginationFixture: fixture,
   __TAURI_INTERNALS__: {
     invoke(cmd: string, args: Record<string, unknown> = {}) {
-      if (cmd === "gate_state") return Promise.resolve({ base: "https://fixture.invalid", adapter: "edge_v1", activated: true });
+      if (cmd === "gate_state") return Promise.resolve({ base: "https://fixture.invalid", id: "fixture-library", name: "测试媒体库", adapter: "playlist_v1", activated: true, capabilities: { catalog: true, search: true, categories: true, related: true } });
       if (cmd === "data_call") {
         const command = (args.command || {}) as Record<string, unknown>;
         const map: Record<string, string> = { boot: "app_boot", feed: "api_feed", category: "api_category", posts: "api_posts", search_hot: "api_search_hot", play: "api_play" };
@@ -68,7 +68,7 @@ createRoot(document.querySelector("#root")!).render(
   <React.StrictMode>
     <AppProvider>
       <div style={{ position: "relative", width: 390, height: 844 }}>
-        <ChannelPage cate="ai-duanju" name="AI成人短剧" onBack={() => {}} wide={false} />
+        <ChannelPage cate="travel" name="旅行记录" onBack={() => {}} wide={false} />
       </div>
     </AppProvider>
   </React.StrictMode>,

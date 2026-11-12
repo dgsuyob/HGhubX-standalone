@@ -82,6 +82,7 @@ try {
   await page.goto(origin);
   await page.getByRole('heading',{name:'从你的媒体库开始'}).waitFor();
   assert.equal(await page.evaluate(()=>window.__libraryFixture.calls.filter(c=>c.cmd==='data_call'&&c.command!=='boot').length),0,'Unconfigured app must not fetch content');
+  await page.locator('.a-rise').evaluateAll(async nodes=>{await Promise.all(nodes.flatMap(n=>n.getAnimations()).map(a=>a.finished));});
   await page.screenshot({path:join(output,`${mode}-gate.png`),fullPage:true});
   await page.getByLabel('选择媒体清单文件').setInputFiles({name:'broken.json',mimeType:'application/json',buffer:Buffer.from('{')});
   await page.getByRole('alert').filter({hasText:'有效的媒体清单'}).waitFor();
@@ -126,6 +127,23 @@ try {
   report.passed.push(`${mode}: no-source startup, invalid import, MP4 playback, local favorite, search, tags, A/B same-ID isolation, reconnect and restart`);
   await context.close();
  }
+ const statePage=await browser.newPage();
+ await statePage.goto(`${origin}tests/library-state.html`);
+ await statePage.waitForFunction(()=>window.libraryStateFixture?.select);
+ await statePage.evaluate(()=>window.libraryStateFixture.select("scope-a"));
+ await statePage.waitForFunction(()=>window.libraryStateFixture.state.id==="scope-a");
+ await statePage.evaluate(()=>{window.libraryStateFixture.favorite(1);window.libraryStateFixture.capture();});
+ await statePage.waitForFunction(()=>window.libraryStateFixture.state.favs.length===1);
+ await statePage.evaluate(()=>window.libraryStateFixture.select("scope-b"));
+ await statePage.waitForFunction(()=>window.libraryStateFixture.state.id==="scope-b");
+ await statePage.evaluate(()=>window.libraryStateFixture.late());
+ await statePage.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ assert.deepEqual(await statePage.evaluate(()=>window.libraryStateFixture.state.history),[],"Late callback from A must not write history into B");
+ await statePage.evaluate(()=>window.libraryStateFixture.select("scope-a"));
+ await statePage.waitForFunction(()=>window.libraryStateFixture.state.id==="scope-a");
+ assert.deepEqual(await statePage.evaluate(()=>window.libraryStateFixture.state.favs),[1]);
+ await statePage.close();
+ report.passed.push("Real React store: late callbacks retain their source scope; same-ID libraries and reconnects remain isolated");
  assert.deepEqual(report.external,[],'No upstream content services may be contacted');
  assert.deepEqual(report.pageErrors,[]);
  console.log(JSON.stringify(report,null,2));

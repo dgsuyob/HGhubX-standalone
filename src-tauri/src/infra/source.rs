@@ -117,10 +117,6 @@ fn save(c: SourceConfig) -> Result<GateState, String> {
             serde_json::to_vec(&c).map_err(|_| "无法序列化媒体库")?,
         )
         .map_err(|_| "无法保存媒体库")?;
-        #[cfg(target_os = "windows")]
-        if path.exists() {
-            std::fs::remove_file(path).map_err(|_| "无法更新媒体库")?;
-        }
         std::fs::rename(temp, path).map_err(|_| "无法更新媒体库")?;
     }
     let state = c.gate();

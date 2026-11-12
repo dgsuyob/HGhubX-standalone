@@ -64,11 +64,21 @@ pub async fn source_open_files(app: tauri::AppHandle) -> Result<Option<GateState
 }
 #[tauri::command]
 pub async fn source_open_demo(app: tauri::AppHandle) -> Result<GateState, String> {
-    let path = app
+    // Android's resource directory lives inside the APK. Materialize the embedded
+    // clip in app-owned storage so the same local range server works everywhere.
+    const DEMO: &[u8] = include_bytes!("../../resources/demo.mp4");
+    let directory = app
         .path()
-        .resource_dir()
-        .map_err(|_| "无法定位演示资源")?
-        .join("resources/demo.mp4");
+        .app_local_data_dir()
+        .map_err(|_| "无法定位演示存储目录")?
+        .join("demo");
+    std::fs::create_dir_all(&directory).map_err(|_| "无法创建演示存储目录")?;
+    let path = directory.join("HGhubX-demo.mp4");
+    if std::fs::read(&path).ok().as_deref() != Some(DEMO) {
+        let temporary = directory.join("HGhubX-demo.tmp");
+        std::fs::write(&temporary, DEMO).map_err(|_| "无法保存演示视频")?;
+        std::fs::rename(temporary, &path).map_err(|_| "无法更新演示视频")?;
+    }
     let state = source::activate_files(vec![path], true)?;
     Ok(state)
 }

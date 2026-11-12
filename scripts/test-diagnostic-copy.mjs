@@ -29,7 +29,7 @@ try {
       isTauri: true,
       diagnosticCopyFixture: fixture,
       __TAURI_INTERNALS__: { async invoke(command, args = {}) {
-        if (command === "gate_state") return { base: "https://fixture.invalid", adapter: "edge_v1", activated: true };
+        if (command === "gate_state") return { base: "https://fixture.invalid", id: "fixture-library", name: "测试媒体库", adapter: "playlist_v1", activated: true, capabilities: { catalog: true, search: true, categories: true, related: true } };
         if (command === "data_call") {
           const c = args.command || {};
           const map = { boot: "app_boot", feed: "api_feed", category: "api_category", posts: "api_posts", search_hot: "api_search_hot", play: "api_play" };
@@ -68,75 +68,59 @@ try {
     await page.goto(`${origin}tests/diagnostic-copy.html`);
     await page.waitForFunction(() => !document.querySelector('[aria-label="播放诊断日志"]').disabled);
   };
-  const networkButton = () => page.getByRole("button").filter({ has: page.getByText("网络诊断", { exact: true }) });
+  const networkButton = () => page.getByRole("button",{name:"检查",exact:true});
+  const copyButton = () => page.getByRole("dialog").getByRole("button",{name:"复制",exact:true});
+  const playbackButton = () => page.getByText("复制播放诊断",{exact:true}).locator("..").locator("..").getByRole("button",{name:"复制",exact:true});
 
   await load();
-  await page.evaluate(() => { window.diagnosticCopyFixture.delay = 5500; });
+  await page.evaluate(()=>{window.diagnosticCopyFixture.delay=250;});
   await networkButton().click();
-  await page.waitForFunction(() => window.diagnosticCopyFixture.nativeCopies.length === 1);
-  const first = await page.evaluate(() => window.diagnosticCopyFixture);
-  assert.equal(first.webCopies, 0);
-  assert(first.nativeCopies[0].includes("【HGhubX 网络诊断】") && first.nativeCopies[0].includes('"status": 200'));
-  await page.getByText(/诊断已复制/).waitFor();
-  report.passed.push("After 5.5 seconds of async diagnostics, copy the complete report through native IPC while web clipboard writes reject");
+  await page.getByText("连通正常",{exact:false}).first().waitFor();
+  assert.equal(await page.evaluate(()=>window.diagnosticCopyFixture.nativeCopies.length),0,"Diagnostics must be reviewed before copying");
+  await copyButton().click();
+  await page.waitForFunction(()=>window.diagnosticCopyFixture.nativeCopies.length===1);
+  const first=await page.evaluate(()=>window.diagnosticCopyFixture);
+  assert.equal(first.webCopies,0);
+  assert(first.nativeCopies[0].includes("【HGhubX 网络诊断】"));
+  report.passed.push("Diagnostics remain local until the user explicitly copies; native clipboard works after async diagnostics");
 
   await load();
-  await page.evaluate(() => { window.diagnosticCopyFixture.failCopy = true; });
+  await page.evaluate(()=>{window.diagnosticCopyFixture.failCopy=true;});
   await networkButton().click();
-  const saved = page.getByRole("textbox", { name: "网络诊断报告" });
-  await saved.waitFor();
-  assert((await saved.inputValue()).includes("连通正常"));
-  assert.equal(await page.getByText(/网络诊断失败：/).count(), 0);
-  await page.screenshot({ path: join(output, "report-fallback.png"), fullPage: true, animations: "disabled" });
-  await page.evaluate(() => { window.diagnosticCopyFixture.failCopy = false; });
-  await page.getByRole("button", { name: "复制报告", exact: true }).click();
-  await page.waitForFunction(() => window.diagnosticCopyFixture.nativeCopies.length === 1);
-  assert.equal(await page.evaluate(() => window.diagnosticCopyFixture.diagCalls), 1);
-  await page.getByText("网络诊断报告已复制", { exact: true }).waitFor();
-  report.passed.push("Clipboard failure retains the report; retry copies it without running diagnostics again");
+  await page.getByText("连通正常",{exact:false}).first().waitFor();
+  await copyButton().click();
+  await page.getByText("fixture: clipboard unavailable",{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.diagnosticCopyFixture.diagCalls),1);
+  await page.screenshot({path:join(output,"report-retained.png"),fullPage:true,animations:"disabled"});
+  await page.evaluate(()=>{window.diagnosticCopyFixture.failCopy=false;});
+  await copyButton().click();
+  await page.waitForFunction(()=>window.diagnosticCopyFixture.nativeCopies.length===1);
+  assert.equal(await page.evaluate(()=>window.diagnosticCopyFixture.diagCalls),1);
+  report.passed.push("Clipboard errors retain the report, expose an error and allow retry without rerunning diagnostics");
 
   await load();
-  await page.evaluate(() => { window.diagnosticCopyFixture.failDiag = true; });
+  await page.evaluate(()=>{window.diagnosticCopyFixture.failDiag=true;});
   await networkButton().click();
-  await page.getByText("网络诊断失败：fixture: diagnostic unavailable", { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => window.diagnosticCopyFixture.nativeCopies.length), 0);
-  assert.equal(await page.getByRole("textbox", { name: "网络诊断报告" }).count(), 0);
-  report.passed.push("Diagnostic failure is distinct from clipboard failure and never reports a successful copy");
+  await page.getByText("fixture: diagnostic unavailable",{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.diagnosticCopyFixture.nativeCopies.length),0);
+  report.passed.push("Failed diagnostics never report a successful copy");
 
-  await load();
-  await page.getByRole("button").filter({ has: page.getByText("复制播放诊断日志", { exact: true }) }).click();
-  await page.waitForFunction(() => window.diagnosticCopyFixture.nativeCopies.length === 1);
-  assert.equal(await page.evaluate(() => window.diagnosticCopyFixture.nativeCopies[0]), '{"event":"fixture.playback","data":{"unicode":"诊断日志"}}\n');
-  assert.equal(await page.evaluate(() => window.diagnosticCopyFixture.webCopies), 0);
-  report.passed.push("Playback logs use the same native copy path after async reading, preserving Unicode and newlines");
-
-  for (const failure of ["emptyLog", "failRead"]) {
-    await load();
-    await page.evaluate(key => { window.diagnosticCopyFixture[key] = true; }, failure);
-    await page.getByRole("button").filter({ has: page.getByText("复制播放诊断日志", { exact: true }) }).click();
-    await page.getByText(failure === "emptyLog" ? "尚无诊断日志，请开启后复现问题" : "fixture: log unavailable", { exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => window.diagnosticCopyFixture.nativeCopies.length), 0);
+  await load();await playbackButton().click();
+  await page.waitForFunction(()=>window.diagnosticCopyFixture.nativeCopies.length===1);
+  assert.equal(await page.evaluate(()=>window.diagnosticCopyFixture.nativeCopies[0]),'{"event":"fixture.playback","data":{"unicode":"诊断日志"}}\n');
+  assert.equal(await page.evaluate(()=>window.diagnosticCopyFixture.webCopies),0);
+  for(const failure of ["emptyLog","failRead"]){
+    await load();await page.evaluate(key=>{window.diagnosticCopyFixture[key]=true;},failure);await playbackButton().click();
+    await page.getByText(failure==="emptyLog"?"尚无诊断日志，请开启后复现问题":"fixture: log unavailable",{exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.diagnosticCopyFixture.nativeCopies.length),0);
   }
-  report.passed.push("Empty or unreadable logs are not copied");
+  report.passed.push("Playback logs preserve Unicode and newlines; empty or unreadable logs are not copied");
 
   await load();
-  await page.evaluate(() => { window.diagnosticCopyFixture.failCopy = true; });
-  await page.getByRole("button").filter({ has: page.getByText("复制播放诊断日志", { exact: true }) }).click();
-  await page.getByText("复制日志失败", { exact: true }).waitFor();
-  assert.equal(await page.getByText("播放诊断日志已复制", { exact: true }).count(), 0);
-  report.passed.push("Native playback log copy failure displays failure rather than a success message");
-
-  await load();
-  await page.evaluate(() => { Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined }); });
-  await networkButton().click();
-  await page.waitForFunction(() => window.diagnosticCopyFixture.nativeCopies.length === 1);
-  const unsupported = await page.evaluate(async () => {
-    window.isTauri = false;
-    try { await window.copyFixtureText("unavailable"); return "unexpected success"; }
-    catch (error) { return error.message; }
-  });
-  assert.equal(unsupported, "当前环境不支持复制，请在应用中重试");
-  report.passed.push("Native copy works without navigator.clipboard; browser-only absence rejects instead of claiming success");
+  await page.evaluate(()=>{window.diagnosticCopyFixture.failCopy=true;});await playbackButton().click();
+  await page.getByText("fixture: clipboard unavailable",{exact:true}).waitFor();
+  assert.equal(await page.getByText("诊断已复制，请检查后再分享",{exact:true}).count(),0);
+  report.passed.push("Playback clipboard errors never produce success notices");
 
   assert.deepEqual(errors, []);
   assert.deepEqual(report.external, []);

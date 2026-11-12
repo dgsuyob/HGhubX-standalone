@@ -29,10 +29,10 @@ try {
     Object.assign(window, {
       mobileLayoutFixture: fixture,
       __TAURI_INTERNALS__: { invoke(cmd, args = {}) {
-        if (cmd === "gate_state") return Promise.resolve({ base: "https://fixture.invalid", adapter: "edge_v1", activated: true });
+        if (cmd === "gate_state") return Promise.resolve({ base: "https://fixture.invalid", id: "fixture-library", name: "测试媒体库", adapter: "playlist_v1", activated: true, capabilities: { catalog: true, search: true, categories: true, related: true } });
         if (cmd === "data_call") {
           const command = args.command || {};
-          const map = { boot: "app_boot", feed: "api_feed", category: "api_category", posts: "api_posts", search_hot: "api_search_hot", play: "api_play" };
+          const map = { boot: "app_boot", feed: "api_feed", category: "api_category", tags: "api_tags", posts: "api_posts", search_hot: "api_search_hot", play: "api_play" };
           cmd = map[command.cmd] || command.cmd;
           args = { ...command }; delete args.cmd;
         }
@@ -41,6 +41,7 @@ try {
         if (cmd === "playback_log_status") return Promise.resolve({ enabled: false, path: null, error: null });
         if (cmd === "debug_log") return Promise.resolve();
         if (cmd === "line_auto") return Promise.resolve({ base: "https://fixture.invalid", previous: "https://fixture.invalid", switched: false, pick: { tier: "main", ms: 1, reason: "fixture", candidates: [] } });
+        if (cmd === "api_tags") return Promise.resolve({categories:[]});
         if (["api_feed", "api_category", "api_posts", "api_search_hot"].includes(cmd)) return Promise.resolve(emptyPage);
         // App's development-only playback self-test must not fetch media upstream.
         if (cmd === "api_play") return Promise.reject("Layout fixture has no playback media");
