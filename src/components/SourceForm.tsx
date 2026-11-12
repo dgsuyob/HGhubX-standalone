@@ -23,16 +23,17 @@ export default function SourceForm({ onDone }: { onDone?: () => void }) {
   };
   return <div>
     <form onSubmit={connect} className="space-y-3">
-      <label className="block text-[12px] text-mut" htmlFor="library-address">媒体清单地址</label>
+      <label className="block text-[12px] text-mut" htmlFor="library-address">网站或媒体清单地址</label>
       <input id="library-address" value={address} onChange={e => setAddress(e.target.value)} disabled={busy || gateBusy}
-        placeholder="https://your-server/library.json" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        placeholder="https://your-site.example" autoCapitalize="none" autoCorrect="off" spellCheck={false}
         className="w-full h-12 rounded-(--r-md) bg-s2 border border-s4 px-3.5 text-[14px] outline-none focus:border-primary" />
+      <p className="text-[11px] leading-relaxed text-mut -mt-1">输入网站会自动查找公开清单；直接输入 JSON 地址也可连接。</p>
       <label className="flex items-start gap-2 text-[11px] leading-relaxed text-mut">
         <input type="checkbox" checked={allowPrivate} onChange={e => setAllowPrivate(e.target.checked)} disabled={busy || gateBusy} className="mt-1" />
         允许访问局域网，仅用于你信任的自建媒体库
       </label>
       <button disabled={!address.trim() || busy || gateBusy} className="w-full h-11 rounded-(--r-md) bg-primary text-on-primary font-semibold text-[13px] pressable disabled:opacity-50">
-        {busy || gateBusy ? "正在连接…" : "连接媒体库"}
+        {busy || gateBusy ? "正在识别…" : "自动识别并连接"}
       </button>
     </form>
     <div className="grid grid-cols-2 gap-2.5 mt-3">
@@ -49,6 +50,6 @@ export default function SourceForm({ onDone }: { onDone?: () => void }) {
       });
     }} />
     {(error || gateError) && <div role="alert" className="mt-3 rounded-(--r-sm) bg-danger/10 p-3 text-danger text-[12px] break-words">{error || gateError}</div>}
-    <p className="mt-5 text-[11px] leading-relaxed text-mut">连接你有权访问的媒体清单。示例完全在本机播放；收藏和记录按媒体库分别保存。</p>
+    <p className="mt-5 text-[11px] leading-relaxed text-mut">只发现网站公开声明的媒体清单，不执行网页脚本，也不解析登录后的播放接口。示例完全在本机播放；收藏和记录按媒体库分别保存。</p>
   </div>;
 }

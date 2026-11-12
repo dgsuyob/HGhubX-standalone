@@ -26,7 +26,30 @@
 }
 ```
 
-示例域名是占位符，请替换成你有权使用的服务器地址。不要把现有内容站的主页地址当成清单地址。
+示例域名是占位符，请替换成你有权使用的服务器地址。你可以让 HGhubX 直接连接清单 JSON，也可以从网站主页自动发现这个清单。
+
+## 从网站自动发现
+
+网站可以在 HTML 的 `head` 中使用以下任一方式声明清单：
+
+```html
+<link rel="alternate"
+      type="application/vnd.hghubx.manifest+json"
+      href="/library.json">
+```
+
+```html
+<link rel="hghubx-manifest" href="/library.json">
+<meta name="hghubx-manifest" content="/library.json">
+```
+
+如果页面没有声明，HGhubX 还会依次尝试同源公开路径：
+
+- `/.well-known/hghubx.json`
+- `/hghubx.json`
+- `/library.json`
+
+HGhubX 只读取 HTML 标记并连接返回媒体清单 JSON 的同源候选地址。它不会执行网页脚本、跟随页面中的普通链接，也不会调用登录后的私有接口。声明或约定路径返回的实际清单仍然遵循下文的格式、URL 和网络限制。若清单位于不同来源，请直接输入清单 JSON 地址。
 
 ## 字段与限制
 

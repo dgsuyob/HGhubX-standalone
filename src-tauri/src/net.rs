@@ -46,7 +46,7 @@ pub async fn get_manifest(raw: &str, allow_private: bool) -> Result<reqwest::Res
         let response = client
             .get(next.clone())
             .timeout(Duration::from_secs(20))
-            .header("Accept", "application/json")
+            .header("Accept", "application/json, text/html;q=0.9")
             .send()
             .await
             .map_err(|e| err_text(&e))?;

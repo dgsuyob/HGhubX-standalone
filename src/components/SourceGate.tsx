@@ -10,7 +10,7 @@ export default function SourceGate() {
       <div className="w-full max-w-[420px] a-rise">
         <div className="flex items-center gap-3 mb-9"><Logo size={54}/><div><h1 className="text-[27px] font-bold tracking-tight">{APP_NAME}</h1><p className="text-[12px] text-mut mt-1">{APP_DESC}</p></div></div>
         <h2 className="text-[21px] font-semibold">从你的媒体库开始</h2>
-        <p className="text-[12px] text-mut mt-2 mb-6 leading-relaxed">连接自己的媒体清单，或导入本机文件，接着看你喜欢的内容。</p>
+        <p className="text-[12px] text-mut mt-2 mb-6 leading-relaxed">输入网站自动发现公开媒体清单，也可直接连接 JSON 清单或导入本机文件。</p>
         <SourceForm />
       </div>
     </main>

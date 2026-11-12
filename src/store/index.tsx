@@ -256,7 +256,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const activateGate = useCallback(async (address: string, allowPrivate = false) => {
     const raw = address.trim();
-    if (!raw) { setGateError("请输入接入地址"); throw new Error("请输入接入地址"); }
+    if (!raw) { setGateError("请输入网站或媒体清单地址"); throw new Error("请输入网站或媒体清单地址"); }
     setGateBusy(true);
     setGateError("");
     try {

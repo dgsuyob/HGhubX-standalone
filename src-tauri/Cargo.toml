@@ -27,6 +27,7 @@ tauri-plugin-opener = "=2.7.2"
 tauri-plugin-clipboard-manager = "=2.5.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+dom_query = "0.28"
 time = { version = "0.3", features = ["formatting"] }
 # 注意：system-proxy 必须显式列出。关掉 default-features 会连带丢掉它，
 # 客户端就完全不看 Windows 系统代理（注册表 ProxyEnable/ProxyServer）而直连，
