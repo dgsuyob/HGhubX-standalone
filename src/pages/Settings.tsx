@@ -1,380 +1,57 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { api, APP_VERSION, hostOf, logLine, platform } from "../api";
-import type { UpdateInfo } from "../types";
+import { useState, type ReactNode } from "react";
+import { api, APP_VERSION, hostOf } from "../api";
 import { APP_NAME } from "../branding";
 import { useStore } from "../store";
 import { Modal, Toggle } from "../components/ui";
 import GateDialog from "../components/GateDialog";
-import { copyPlaybackLog, initPlaybackLog, setPlaybackLog, tracePlayback, usePlaybackLog } from "../player/diagnostics";
-import { formatNetDiag, shortVerdict } from "../netDiagReport";
+import { copyPlaybackLog, initPlaybackLog, setPlaybackLog, usePlaybackLog } from "../player/diagnostics";
+import { formatNetDiag } from "../netDiagReport";
 import { copyText } from "../clipboard";
-import { IBack, IBoltF, IBroom, IChevR, IHeart, IInfo, ILink, ILockF, IMoon, IRefresh, ISettings, ISun, IVolMute, IList, Logo } from "../icons";
+import { IBack, ISettings, Logo } from "../icons";
 
-/* 独立设置页：接入地址 / 外观 / 播放 / 本地数据 / 清理缓存 / 网络诊断 / 关于
-   入口：Windows 侧栏「设置」、Android「我的」右上角齿轮 */
-export default function Settings({ onBack, wide }: { onBack: () => void; wide: boolean }) {
-  const { theme, setTheme, favs, history, muteOnStartup, setMuteOnStartup, swipeEp, setSwipeEp, preferHevc, setPreferHevc, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity, toast, gate } = useStore();
-  const [about, setAbout] = useState(false);
-  const [clearOpen, setClearOpen] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const [lineOpen, setLineOpen] = useState(false);
-  const [lineBase, setLineBase] = useState("");
-  const [checking, setChecking] = useState(false);
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  /** 应用内更新进行到哪一步（空串=没在更新） */
-  const [updating, setUpdating] = useState("");
-  const playbackLog = usePlaybackLog();
-  const [copyingLog, setCopyingLog] = useState(false);
-  const [diagnosing, setDiagnosing] = useState(false);
-  const [diagReport, setDiagReport] = useState<string | null>(null);
-  const [copyingReport, setCopyingReport] = useState(false);
-
-  useEffect(() => { setLineBase(gate.base); }, [gate.base]);
-  useEffect(() => { void initPlaybackLog(); }, []);
-
-  const checkUpdate = async () => {
-    setChecking(true);
-    try {
-      const info = await api.checkUpdate();
-      if (info.has_update) setUpdate(info);
-      else toast(`已是最新版本 v${info.current}`, "ok");
-    } catch (e) {
-      toast((e as Error).message || "检查更新失败", "info");
-    } finally {
-      setChecking(false);
-    }
-  };
-  /** 更新：用系统浏览器打开下载页，由系统/浏览器完成下载与安装。
-   *
-   * 不再自己下载 APK 并调安装器 —— 那条路在安卓上要额外过 FileProvider
-   * 与「安装未知应用」授权，失败点多，体验并不比浏览器好。
-   */
-  const doUpdate = async () => {
-    if (!update) return;
-    setUpdating("打开中…");
-    try {
-      await api.openUrl(update.url);
-    } catch (e) {
-      await copyText(update.url)
-        .then(() => toast("下载地址已复制，可在浏览器粘贴打开", "ok"))
-        .catch(() => toast((e as Error).message || "打开失败", "info"));
-    } finally {
-      setUpdating("");
-    }
-  };
-
-  const Section = ({ title, children }: { title: string; children: ReactNode }) => (
-    <>
-      <div className="text-[10.5px] font-semibold text-dim tracking-wide px-1 mt-4 mb-1.5">{title}</div>
-      <div className="rounded-(--r-md) bg-s2 divide-y divide-s3">{children}</div>
-    </>
-  );
-
-  return (
-    <div className="absolute inset-0 bg-bg flex flex-col">
-      <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
-        <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />
-        <div className="relative px-3 pt-2 pb-4">
-          <button onClick={onBack} aria-label="返回" className="w-10 h-10 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={20} /></button>
-          <div className="px-2 mt-1 flex items-end justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="w-9 h-9 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><ISettings size={20} strokeWidth={1.7} /></span>
-                <span className="text-[24px] font-bold tracking-wide text-on">设置</span>
-              </div>
-              <div className="text-[11px] text-mut mt-1">外观 · 播放 · 本地数据 · 诊断</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex-1 scroll-y px-4 pt-1 pb-10">
-        <div className={wide ? "max-w-[720px] mx-auto" : ""}>
-          <Section title="外观">
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
-              <div className="flex-1">
-                <div className="text-[12.5px] text-on">深色外观</div>
-                <div className="text-[10.5px] text-mut">跟随设计稿的 Fluent 深色</div>
-              </div>
-              <Toggle on={theme === "dark"} onChange={(on) => setTheme(on ? "dark" : "light")} label="深色外观" />
-            </div>
-          </Section>
-
-          <Section title="播放">
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IVolMute size={16} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">启动时静音</div>
-                <div className="text-[10.5px] text-mut">默认开启，每次启动均静音；关闭后记住上次静音状态。下次启动生效。</div>
-              </div>
-              <Toggle on={muteOnStartup} onChange={setMuteOnStartup} label="启动时静音" />
-            </div>
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IList size={16} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">上下划切集</div>
-                <div className="text-[10.5px] text-mut">多集短剧上下滑换集，划到头再换下一部</div>
-              </div>
-              <Toggle on={swipeEp} onChange={setSwipeEp} label="上下划切集" />
-            </div>
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBoltF size={16} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">优先高清</div>
-                <div className="text-[10.5px] text-mut">有高清就用 HEVC，播不了会自动切回标准</div>
-              </div>
-              <Toggle on={preferHevc} onChange={setPreferHevc} label="优先高清" />
-            </div>
-          </Section>
-
-          <Section title="本地数据">
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IHeart size={16} /></span>
-              <div className="flex-1">
-                <div className="text-[12.5px] text-on">本地喜欢</div>
-                <div className="text-[10.5px] text-mut">{favs.length} 部收藏 · {history.length} 条观看记录</div>
-              </div>
-            </div>
-            <button onClick={() => setClearOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBroom size={16} /></span>
-              <div className="flex-1">
-                <div className="text-[12.5px] text-on">清理缓存</div>
-                <div className="text-[10.5px] text-mut">封面 / 播放缓存与本地记录</div>
-              </div>
-              <IChevR size={15} className="text-mut" />
-            </button>
-          </Section>
-
-          <Section title="网络">
-            <button onClick={() => setLineOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBoltF size={16} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">接入地址</div>
-                <div className="text-[10.5px] text-mut truncate">{lineBase ? hostOf(lineBase) : "未设置"}</div>
-              </div>
-              <IChevR size={15} className="text-mut" />
-            </button>
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILockF size={15} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">严格安全模式</div>
-                <div className="text-[10.5px] text-mut">
-                  {cliRelaxed
-                    ? "已由启动参数 --no-strict 切换为兼容模式；可手动重新开启"
-                    : "默认开启，防上游投毒与内网探测；若导致正文或特殊代理异常可关闭（或用 --no-strict 启动）"}
-                </div>
-              </div>
-              <Toggle
-                on={strictSecurity}
-                disabled={!strictSecurityReady || securityPending}
-                onChange={(on) => {
-                  void setStrictSecurity(on).then(() => {
-                    toast(on ? "已开启严格安全模式" : "已切换为兼容模式（关闭激进清洗与守卫）", "info");
-                  }).catch(() => toast("安全设置保存失败，已保持原模式", "info"));
-                }}
-                label="严格安全模式"
-              />
-            </div>
-            {/* 打不开时先点这里：把 DNS / 代理 / HTTP 结果复制给维护者 */}
-            <button disabled={diagnosing} onClick={async () => {
-              setDiagnosing(true);
-              try {
-                const diag = await api.netDiag();
-                // 落盘走原始 JSON（便于脚本统计），复制给对方的是分段可读报告。
-                logLine(`[net_diag] ${JSON.stringify(diag)}`);
-                const http = (diag.http ?? {}) as { ms?: number; status?: number };
-                const dns = (diag.dns ?? {}) as { count?: number; has_fake_ip?: boolean };
-                const env = (diag.env ?? {}) as Record<string, unknown>;
-                tracePlayback("net.diag", {
-                  verdict: String(diag.verdict ?? ""),
-                  host: hostOf(String(diag.host ?? "")), http_status: http.status ?? null, http_ms: http.ms ?? null,
-                  dns_count: dns.count ?? null, fake_ip: dns.has_fake_ip ?? null,
-                  proxy: Object.values(env).some(Boolean), strict: strictSecurity,
-                });
-                const report = formatNetDiag(diag);
-                try {
-                  await copyText(report);
-                  toast(`诊断已复制 · ${shortVerdict(diag)}`, "ok");
-                } catch {
-                  setDiagReport(report);
-                  toast("诊断已完成，复制失败，可在报告中重试", "info");
-                }
-              } catch (e) {
-                const detail = e instanceof Error ? e.message : typeof e === "string" ? e : "请稍后重试";
-                toast(`网络诊断失败：${detail}`, "info");
-              } finally {
-                setDiagnosing(false);
-              }
-            }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
-              <div className="flex-1">
-                <div className="text-[12.5px] text-on">{diagnosing ? "正在诊断…" : "网络诊断"}</div>
-                <div className="text-[10.5px] text-mut">DNS / TCP / 系统代理 / 官网连通性，一键复制带结论的报告</div>
-              </div>
-              <IChevR size={15} className="text-mut" />
-            </button>
-          </Section>
-
-          <Section title="播放诊断">
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">播放诊断日志</div>
-                <div className="text-[10.5px] text-mut">版本、平台、当前线路和播放失败原因始终记录；开关只额外记录拖动与缓冲细节</div>
-                {playbackLog.error && <div role="alert" className="text-[10.5px] text-danger">{playbackLog.error}</div>}
-              </div>
-              <Toggle label="播放诊断日志" on={playbackLog.enabled} disabled={!playbackLog.ready || playbackLog.pending}
-                onChange={(on) => { void setPlaybackLog(on).then(() => toast(on ? "已开启播放诊断，请复现问题" : "已关闭播放诊断，已有日志保留", "ok")).catch(() => toast("日志设置保存失败，请重试", "info")); }} />
-            </div>
-            <button disabled={!playbackLog.ready || playbackLog.pending || copyingLog} onClick={async () => {
-              setCopyingLog(true);
-              try { await copyPlaybackLog(); toast("播放诊断日志已复制", "ok"); }
-              catch (e) { toast((e as Error).message || "复制日志失败", "info"); }
-              finally { setCopyingLog(false); }
-            }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">{copyingLog ? "正在复制…" : "复制播放诊断日志"}</div>
-                <div className="text-[10.5px] text-mut break-all">含版本、平台、当前线路、播放失败原因，粘贴即完整{playbackLog.path ? ` · ${playbackLog.path}` : ""}</div>
-              </div>
-              <IChevR size={15} className="text-mut" />
-            </button>
-          </Section>
-
-          <Section title="其他">
-            <button onClick={checkUpdate} disabled={checking} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IRefresh size={16} /></span>
-              <div className="flex-1">
-                <div className="text-[12.5px] text-on">检查更新</div>
-                <div className="text-[10.5px] text-mut">{checking ? "检查中…" : `当前 v${APP_VERSION} · 对比 GitHub Release`}</div>
-              </div>
-              <IChevR size={15} className="text-mut" />
-            </button>
-            <button onClick={() => setAbout(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
-              <div className="flex-1">
-                <div className="text-[12.5px] text-on">关于 {APP_NAME}</div>
-                <div className="text-[10.5px] text-mut">版本 {APP_VERSION} · 仅限非商业使用</div>
-              </div>
-              <IChevR size={15} className="text-mut" />
-            </button>
-          </Section>
-
-          <div className="text-center text-[10px] text-dim mt-5">{APP_NAME} {APP_VERSION} · {platform === "android" ? "Android" : platform === "ios" ? "iOS" : platform === "macos" ? "macOS" : platform === "linux" ? "Linux" : "Windows"} 客户端</div>
-        </div>
-      </div>
-
-      <GateDialog open={lineOpen} onClose={() => setLineOpen(false)} />
-
-      <Modal open={diagReport !== null} onClose={() => setDiagReport(null)} width={520}>
-        <div className="p-5">
-          <h2 className="text-[14.5px] font-bold text-on">网络诊断报告</h2>
-          <p className="text-[12px] text-mut mt-2">诊断已完成，自动复制未成功。可以重试复制，或在下方选择报告文字。</p>
-          <textarea readOnly aria-label="网络诊断报告" value={diagReport ?? ""}
-            className="w-full h-64 mt-3 p-3 rounded-(--r-sm) bg-s3 text-[11px] text-on resize-none" />
-          <div className="flex gap-2 mt-4">
-            <button onClick={() => setDiagReport(null)} className="flex-1 h-9 rounded-(--r-ctl) bg-s3 text-[12.5px] text-on pressable">关闭</button>
-            <button disabled={copyingReport} onClick={async () => {
-              if (diagReport === null) return;
-              setCopyingReport(true);
-              try { await copyText(diagReport); toast("网络诊断报告已复制", "ok"); setDiagReport(null); }
-              catch { toast("复制失败，请选择报告文字手动复制", "info"); }
-              finally { setCopyingReport(false); }
-            }} className="flex-1 h-9 rounded-(--r-ctl) brand-grad text-[12.5px] pressable disabled:opacity-60">{copyingReport ? "正在复制…" : "复制报告"}</button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal open={about} onClose={() => setAbout(false)} width={392}>
-        <div className="p-5">
-          <div className="flex items-center gap-3">
-            <Logo size={44} />
-            <div>
-              <div className="text-[16px] font-bold text-on leading-tight">{APP_NAME}</div>
-              <div className="text-[11px] text-mut mt-0.5">{APP_NAME} · 第三方客户端 v{APP_VERSION}</div>
-            </div>
-          </div>
-
-          <p className="text-[12px] text-on/70 leading-relaxed mt-4">
-            基于 Rust + Tauri 2 构建的跨平台客户端，支持 Windows、macOS 与 Android。
-            界面遵循 Fluent 设计语言，播放器采用沉浸式竖屏信息流。
-          </p>
-
-          <div className="mt-4 rounded-(--r-sm) bg-s3/60 p-3 text-[11px] text-mut leading-relaxed">
-            本项目仅供学习与交流，所有内容均来自上游站点，客户端不存储、不分发任何视频内容。
-            请于 24 小时内删除相关资源，并支持正版。
-          </div>
-
-          <div className="mt-4 divide-y divide-s3">
-            <button onClick={() => { api.openUrl("https://github.com/zxsos/HGhubX").catch(() => { copyText("https://github.com/zxsos/HGhubX").then(() => toast("仓库地址已复制", "ok")).catch(() => {}); }); }}
-              className="w-full flex items-center gap-2 py-2.5 text-left pressable">
-              <ILink size={15} className="text-mut" />
-              <span className="text-[12px] text-on/85">github.com/zxsos/HGhubX</span>
-              <span className="ml-auto text-[10.5px] text-primary">复制</span>
-            </button>
-            <button onClick={() => {
-              if (!lineBase) { toast("尚未配置接入地址", "info"); return; }
-              copyText(lineBase).then(() => toast("接入地址已复制", "ok")).catch(() => {});
-            }}
-              className="w-full flex items-center gap-2 py-2.5 text-left pressable">
-              <ILink size={15} className="text-mut" />
-              <span className="text-[12px] text-on/85">{lineBase ? hostOf(lineBase) : "未配置接入地址"}</span>
-              <span className="ml-auto text-[10.5px] text-primary">复制</span>
-            </button>
-            <div className="flex items-center gap-2 py-2.5">
-              <IInfo size={15} className="text-mut" />
-              <span className="text-[12px] text-on/85">PolyForm Noncommercial 1.0.0</span>
-              <span className="ml-auto text-[10.5px] text-mut">仅限非商业</span>
-            </div>
-          </div>
-
-          <button onClick={() => setAbout(false)} className="mt-4 w-full h-9 rounded-(--r-ctl) bg-s3 text-[12.5px] text-on pressable">知道了</button>
-        </div>
-      </Modal>
-
-      <Modal open={clearOpen} onClose={() => setClearOpen(false)} width={330}>
-        <div className="p-5">
-          <div className="text-[14.5px] font-bold text-on">清理缓存</div>
-          <p className="text-[12px] text-mut leading-relaxed mt-2">
-            只清除封面与播放列表缓存（解密图 / m3u8）。收藏、观看记录、搜索历史与登录状态都会保留。
-          </p>
-          <div className="flex gap-2 mt-5">
-            <button onClick={() => setClearOpen(false)} className="flex-1 h-9 rounded-(--r-ctl) bg-s3 text-[12.5px] text-on/80 pressable">取消</button>
-            <button disabled={clearing} onClick={async () => {
-              setClearing(true);
-              try { await api.clearCache(); } catch { /* 忽略 */ }
-              setClearing(false);
-              setClearOpen(false);
-              toast("缓存已清理", "ok");
-            }} className="flex-1 h-9 rounded-(--r-ctl) bg-primary text-[12.5px] font-semibold text-on-primary pressable disabled:opacity-60">
-              {clearing ? "清理中…" : "确定清理"}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal open={!!update?.has_update} onClose={() => setUpdate(null)} width={392}>
-        <div className="p-5">
-          <div className="text-[15px] font-bold text-on">发现新版本</div>
-          <p className="text-[11.5px] text-mut mt-1.5">
-            v{update?.current} → <b className="text-on">v{update?.latest}</b>
-            {update?.published_at ? ` · ${update.published_at.slice(0, 10)}` : ""}
-          </p>
-          {!!update?.notes && (
-            <div className="mt-3 max-h-[180px] scroll-y rounded-(--r-sm) bg-s2 p-3 text-[11px] text-mut whitespace-pre-wrap leading-relaxed">{update.notes}</div>
-          )}
-          <div className="flex gap-2 mt-4">
-            <button onClick={() => setUpdate(null)} disabled={!!updating}
-              className="flex-1 h-9 rounded-(--r-ctl) bg-s3 text-[12.5px] text-on/80 pressable disabled:opacity-60">稍后</button>
-            <button onClick={() => void doUpdate()} disabled={!!updating}
-              className="flex-1 h-9 rounded-(--r-ctl) bg-primary text-[12.5px] font-semibold text-on-primary pressable disabled:opacity-60">
-              {updating || "前往下载"}
-            </button>
-          </div>
-          <div className="text-[10px] text-dim mt-2.5 break-all">{update?.url}</div>
-        </div>
-      </Modal>
-    </div>
-  );
+function Section({title,children}:{title:string;children:ReactNode}) {
+  return <section className="mt-5"><h2 className="text-[11px] text-mut mb-2 px-1">{title}</h2><div className="rounded-(--r-md) bg-s2 divide-y divide-s3">{children}</div></section>;
+}
+function Row({title,description,children}:{title:string;description?:string;children:ReactNode}) {
+  return <div className="flex items-center gap-4 p-4"><div className="flex-1 min-w-0"><div className="text-[13px] text-on">{title}</div>{description&&<div className="text-[11px] text-mut mt-1 leading-relaxed break-words">{description}</div>}</div>{children}</div>;
+}
+export default function Settings({onBack,wide}:{onBack:()=>void;wide:boolean}) {
+  const {theme,setTheme,gate,selectSource,resetGate,favs,history,muteOnStartup,setMuteOnStartup,swipeEp,setSwipeEp,preferHevc,setPreferHevc,toast}=useStore();
+  const [picker,setPicker]=useState(false),[disconnect,setDisconnect]=useState(false),[busy,setBusy]=useState(false),[report,setReport]=useState("");
+  const logs=usePlaybackLog();
+  const run=async(action:()=>Promise<void>)=>{if(busy)return;setBusy(true);try{await action();}catch(e){toast(e instanceof Error?e.message:String(e),"info");}finally{setBusy(false);}};
+  const button="text-[12px] text-primary pressable disabled:opacity-50 shrink-0";
+  return <div className="absolute inset-0 bg-bg flex flex-col">
+    <header className="flex items-center gap-3 px-4 pb-3" style={{paddingTop:"calc(var(--sat, 0px) + 12px)"}}><button aria-label="返回" onClick={onBack} className="w-10 h-10 flex items-center justify-center text-on pressable"><IBack size={22}/></button><ISettings size={23} className="text-primary"/><h1 className="text-[23px] font-bold text-on">设置</h1></header>
+    <main className={`flex-1 scroll-y px-4 pb-12 ${wide?"max-w-[760px] w-full mx-auto":""}`}>
+      <Section title="媒体库">
+        <Row title={gate.name||"未连接"} description={gate.base?hostOf(gate.base):gate.adapter==="demo"?"自带的本机演示视频":"本机文件与导入清单"}><button className={button} onClick={()=>setPicker(true)}>更换媒体库</button></Row>
+        {gate.base&&<Row title="刷新媒体清单" description="从你已选择的地址重新读取清单"><button disabled={busy} className={button} onClick={()=>void run(async()=>{selectSource(await api.sourceReload());toast("清单已刷新","ok");})}>刷新</button></Row>}
+        <Row title="断开当前媒体库" description="保留该媒体库的收藏与观看记录"><button className={button} onClick={()=>setDisconnect(true)}>断开</button></Row>
+      </Section>
+      <Section title="外观与播放">
+        <Row title="深色外观"><Toggle label="深色外观" on={theme==="dark"} onChange={on=>setTheme(on?"dark":"light")}/></Row>
+        <Row title="启动时静音" description="下次打开媒体库时生效"><Toggle label="启动时静音" on={muteOnStartup} onChange={setMuteOnStartup}/></Row>
+        <Row title="上下划切集" description="多集媒体上下划换集，划到头再切换条目"><Toggle label="上下划切集" on={swipeEp} onChange={setSwipeEp}/></Row>
+        <Row title="优先高清" description="来源提供额外高清流时优先使用"><Toggle label="优先高清" on={preferHevc} onChange={setPreferHevc}/></Row>
+      </Section>
+      <Section title="本机数据">
+        <Row title="当前媒体库记录" description={`${favs.length} 部收藏 · ${history.length} 条观看记录`}><span className="text-[11px] text-mut">独立保存</span></Row>
+        <Row title="清理播放缓存" description="保留媒体库、收藏和观看记录"><button disabled={busy} className={button} onClick={()=>void run(async()=>{await api.clearCache();toast("播放缓存已清理","ok");})}>清理</button></Row>
+      </Section>
+      <Section title="诊断">
+        {gate.base&&<Row title="网络诊断" description="结果先在本机展示，由你选择是否复制"><button disabled={busy} className={button} onClick={()=>void run(async()=>{setReport(formatNetDiag(await api.netDiag()));})}>检查</button></Row>}
+        <Row title="播放诊断日志" description="仅在本机记录播放事件，默认关闭"><Toggle label="播放诊断日志" on={logs.enabled} onChange={on=>void run(async()=>{await initPlaybackLog();await setPlaybackLog(on);})}/></Row>
+        <Row title="复制播放诊断"><button disabled={busy} className={button} onClick={()=>void run(async()=>{await copyPlaybackLog();toast("诊断已复制，请检查后再分享","ok");})}>复制</button></Row>
+      </Section>
+      <Section title="关于">
+        <Row title={`${APP_NAME} ${APP_VERSION}`} description="跨平台媒体播放器与个人媒体库客户端"><Logo size={38}/></Row>
+        <p className="p-4 text-[11px] text-mut leading-relaxed">媒体由你选择。软件会为正常播放产生临时缓存，收藏和观看记录保存在本机。请连接你拥有或已获授权的内容。本预览版通过 GitHub Actions 构建，不启用在线更新。</p>
+        <p className="p-4 text-[11px] text-mut">PolyForm Noncommercial 1.0.0 · 代码许可证不授予第三方内容权利</p>
+      </Section>
+    </main>
+    <GateDialog open={picker} onClose={()=>setPicker(false)}/>
+    <Modal open={disconnect} onClose={()=>setDisconnect(false)} width={360}><div className="p-5"><h2 className="text-[16px] font-semibold text-on">断开当前媒体库？</h2><p className="text-[12px] text-mut mt-3">收藏与观看记录会保留，重新连接同一媒体库后可继续使用。</p><div className="flex gap-3 mt-5"><button className="flex-1 h-10 bg-s3 rounded-(--r-sm) text-on" onClick={()=>setDisconnect(false)}>取消</button><button disabled={busy} className="flex-1 h-10 bg-primary text-on-primary rounded-(--r-sm)" onClick={()=>void run(async()=>{await resetGate();})}>断开</button></div></div></Modal>
+    <Modal open={!!report} onClose={()=>setReport("")} width={620}><div className="p-5"><h2 className="font-semibold text-on">网络诊断</h2><pre className="whitespace-pre-wrap break-words text-[11px] text-mut max-h-[60vh] scroll-y my-4">{report}</pre><div className="flex gap-3"><button className="flex-1 h-10 bg-s3 text-on rounded-(--r-sm)" onClick={()=>setReport("")}>关闭</button><button className="flex-1 h-10 bg-primary text-on-primary rounded-(--r-sm)" onClick={()=>void copyText(report).then(()=>toast("已复制，请检查后再分享","ok"))}>复制</button></div></div></Modal>
+  </div>;
 }

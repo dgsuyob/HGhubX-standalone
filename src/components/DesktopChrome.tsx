@@ -78,7 +78,7 @@ export function DesktopRail({ collapsed }: { collapsed: boolean }) {
         <button className={`win-search-launch ${onTab("search") ? "is-selected" : ""}`}
           onClick={() => setTab("search")} aria-label="搜索">
           <ISearch size={19} strokeWidth={1.7} />
-          <span className="win-nav-copy">搜索你感兴趣的</span>
+          <span className="win-nav-copy">搜索当前媒体库</span>
           <kbd className="win-nav-key">/</kbd>
         </button>
         <div className="win-nav-items">
@@ -90,12 +90,6 @@ export function DesktopRail({ collapsed }: { collapsed: boolean }) {
               <span className="win-nav-copy">{label}</span>
             </button>
           ))}
-          <button className={`win-nav-item ${railPage === "ranks" ? "is-selected" : ""}`}
-            aria-current={railPage === "ranks" ? "page" : undefined}
-            onClick={() => { if (railPage !== "ranks") push({ kind: "ranks" }); }}>
-            <span className="win-nav-symbol"><ITrophy size={21} strokeWidth={1.7} /></span>
-            <span className="win-nav-copy">排行榜</span>
-          </button>
           <button className={`win-nav-item ${railPage === "settings" ? "is-selected" : ""}`}
             aria-current={railPage === "settings" ? "page" : undefined}
             onClick={() => { if (railPage !== "settings") push({ kind: "settings" }); }}>
@@ -104,11 +98,11 @@ export function DesktopRail({ collapsed }: { collapsed: boolean }) {
           </button>
         </div>
         <div className="win-sidebar-bottom">
-          <button className="win-account" onClick={() => { setTab("profile"); if (!user) setLoginOpen(true); }}>
+          <button className="win-account" onClick={() => { setTab("profile"); }}>
             <Avatar size={34} hue={220} name={user?.nickname} icon={user ? undefined : <IUser size={17} />} />
             <span className="win-account-copy">
-              <strong>{user?.nickname || `登录 ${APP_NAME}`}</strong>
-              <small>{user ? "你的精彩，都在这里" : "留住每一次心动"}</small>
+              <strong>{user?.nickname || "本机资料库"}</strong>
+              <small>{user ? "你的精彩，都在这里" : "收藏与记录保存在本机"}</small>
             </span>
           </button>
           <span className="win-sidebar-version">{APP_NAME} for {platform === "macos" ? "macOS" : platform === "linux" ? "Linux" : "Windows"} {APP_VERSION}</span>

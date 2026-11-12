@@ -60,8 +60,10 @@ const HLS_CONFIG = {
 export function createPlaybackEngine({
   video, src, autoPlay, trace, isActive, play, onBuffered, onError, applySettings,
 }: PlaybackEngineOptions): PlaybackEngine {
-  const url = isLocalMedia(src) ? src : playlist(src);
-  const mode: PlaybackEngineMode = !url.includes("/seg?u=") && Hls.isSupported() ? "hls" : "native";
+  const direct = /^(asset:|blob:|https?:\/\/asset\.localhost\/)/.test(src);
+  const url = direct || isLocalMedia(src) ? src : playlist(src);
+  const hlsSource = !direct && (url.includes("/hls?u=") || url.includes(".m3u8"));
+  const mode: PlaybackEngineMode = hlsSource && !url.includes("/seg?u=") && Hls.isSupported() ? "hls" : "native";
   trace("source.load", {
     engine: mode === "hls" ? "hls.js" : "native",
     auto_play: autoPlay,

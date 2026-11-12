@@ -182,7 +182,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         title: detail?.title || cards[curId]?.title || "",
         cover: detail?.cover || cards[curId]?.cover || "",
         desc: detail?.description || "",
-        author: detail?.author?.name || "佚名",
+        author: detail?.author?.name || store.gate.name || "我的媒体库",
         authorId: detail?.author?.id || -1,
         tags: detail?.tags || [],
         score: detail?.score || 0,
@@ -798,7 +798,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     } catch { toast("画中画开启失败", "info"); }
   };
 
-  const requireLogin = () => { if (!user) { setLoginOpen(true); return false; } return true; };
+  const requireLogin = () => { if (!store.gate.capabilities?.account) return false; if (!user) { setLoginOpen(true); return false; } return true; };
 
   const onLike = () => {
     if (!curId) return;
@@ -998,18 +998,18 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                     {isFav(curId) ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
                     <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">收藏</span>
                   </button>
-                  <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable" aria-label="评论">
+                  {store.gate.capabilities?.comments && <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable" aria-label="评论">
                     <ICommentF size={26} className="hg-ink hg-ov-shadow" />
                     <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">评论</span>
-                  </button>
+                  </button>}
                   <button onClick={() => enterFs(isLandscapeCurrent())} className="flex flex-col items-center gap-1 pressable" aria-label="全屏">
                     <IExpand size={26} className="hg-ink hg-ov-shadow" />
                     <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">全屏</span>
                   </button>
-                  <button onClick={shareLink} className="flex flex-col items-center gap-1 pressable" aria-label="分享">
+                  {store.gate.capabilities?.share && <button onClick={shareLink} className="flex flex-col items-center gap-1 pressable" aria-label="分享">
                     <ILink size={25} className="hg-ink hg-ov-shadow" />
                     <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">分享</span>
-                  </button>
+                  </button>}
                 </div>
               )}
 
@@ -1032,17 +1032,17 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
                         {isLiked(curId) ? <IHeartF size={30} className="text-neon" /> : <IHeart size={30} className="text-white tsh" />}
                       </span>
-                      <span className="text-[10.5px] text-white/90 tabular-nums">{fmt(likeCount)}</span>
+                      <span className="text-[10.5px] text-white/90 tabular-nums">喜欢</span>
                     </button>
 
-                    <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable">
+                    {store.gate.capabilities?.comments && <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable">
                       <ICommentF size={27} className="text-white tsh" />
                       <span className="text-[10.5px] text-white/90 tabular-nums">{fmt(meta.comment)}</span>
-                    </button>
+                    </button>}
 
                     <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={isFav(curId)}>
                       {isFav(curId) ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
-                      <span className="text-[10.5px] text-white/90 tabular-nums">{fmt(meta.collect)}</span>
+                      <span className="text-[10.5px] text-white/90 tabular-nums">收藏</span>
                     </button>
 
                     <button onClick={() => setPanel("episodes")} className="flex flex-col items-center gap-1 pressable">
@@ -1052,10 +1052,10 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                   </>
                 )}
 
-                <button onClick={shareLink} className="flex flex-col items-center gap-1 pressable">
+                {store.gate.capabilities?.share && <button onClick={shareLink} className="flex flex-col items-center gap-1 pressable">
                   <ILink size={25} className="text-white tsh" />
                   <span className="text-[10.5px] text-white/90">分享</span>
-                </button>
+                </button>}
               </div>
               )}
 
@@ -1346,7 +1346,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                         </div>
                         <div className="flex gap-3 mt-2 text-[10.5px] text-mut">
                           <span>点赞 {fmt(meta.like)}</span>
-                          <span>收藏 {fmt(meta.collect)}</span>
+                          <span>收藏 收藏</span>
                           <span>评论 {fmt(meta.comment)}</span>
                         </div>
                       </div>

@@ -2,9 +2,9 @@ mod adapters;
 mod api;
 mod commands;
 mod domain;
+mod infra;
 #[cfg(target_os = "ios")]
 mod ios_layout;
-mod infra;
 #[cfg(target_os = "linux")]
 mod linux_http;
 mod logging;
@@ -15,11 +15,8 @@ mod media_dns;
 mod net;
 mod network_policy;
 mod playback_log;
-mod ports;
 mod services;
-mod session;
 
-use api::Api;
 use tauri::Manager;
 
 fn allowed_dev_host(host: &str) -> bool {
@@ -57,12 +54,12 @@ fn allowed_frontend_origin(origin: &str) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
                 .build(),
         )
-        .manage(Api::new())
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "ios")]
             {
@@ -89,10 +86,9 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&dir);
                 // 上次激活的门牌（设置 → 数据源）在启动时恢复
                 network_policy::bind_security(&dir);
+                network_policy::enforce_security();
                 infra::source::bind(&dir);
                 playback_log::bind(&dir);
-                let state: tauri::State<Api> = app.state();
-                state.session.bind(dir);
             }
             // Linux 的 <video> 由 GStreamer 播放，它只认常规 HTTP scheme；
             // 这里起一个 loopback 代理，前端与 m3u8 改写都指向它（见 linux_http.rs）
@@ -152,6 +148,7 @@ pub fn run() {
                 );
                 return;
             }
+            let range = request.headers().get("Range").and_then(|v| v.to_str().ok()).map(str::to_owned);
             let uri = request.uri().clone();
             let path = uri.path().to_string();
             let query = uri.query().unwrap_or("").to_string();
@@ -159,7 +156,7 @@ pub fn run() {
             // （Windows/Android 是 http://<scheme>.localhost，macOS/iOS/Linux 是 <scheme>://localhost）。
             // 它同时是 m3u8 分片/key 改写用的前缀，必须与前端 src/api.ts 的 LOCAL 一致。
             tauri::async_runtime::spawn(async move {
-                let mut resp = media::handle(&path, &query, media::LOCAL_ORIGIN).await;
+                let mut resp = media::handle(&path, &query, media::LOCAL_ORIGIN, range.as_deref()).await;
                 if let Some(origin) =
                     request_origin.and_then(|s| tauri::http::HeaderValue::from_str(&s).ok())
                 {
@@ -176,7 +173,6 @@ pub fn run() {
             });
         })
         .invoke_handler(tauri::generate_handler![
-            api::app_boot,
             playback_log::playback_log_status,
             playback_log::playback_log_set,
             playback_log::playback_log_write,
@@ -192,40 +188,11 @@ pub fn run() {
             api::open_url,
             api::set_orientation,
             api::set_text_interaction,
-            api::api_login,
-            api::api_register,
-            api::api_logout,
-            api::api_me,
-            api::api_feed,
-            api::api_topics,
-            api::api_topic,
-            api::api_tags,
-            api::api_tag_videos,
-            api::api_category,
-            api::api_rank,
-            api::api_search,
-            api::api_search_hot,
             api::cache_clear,
-            api::api_posts,
-            api::api_post,
-            api::api_post_playback,
-            api::api_post_like,
-            api::api_post_collect,
-            api::api_post_comments,
-            api::api_post_categories,
-            api::api_post_category,
-            api::api_related,
-            api::api_following,
-            api::api_user,
-            api::api_user_stats,
-            api::api_user_videos,
-            api::api_video,
-            api::api_play,
-            api::api_comments,
-            api::api_comment_send,
-            api::api_like,
-            api::api_collect,
-            api::api_follow,
+            commands::source::source_import_manifest,
+            commands::source::source_reload,
+            commands::source::source_open_files,
+            commands::source::source_open_demo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

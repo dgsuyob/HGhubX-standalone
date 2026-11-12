@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "replace-with-your-library-id",
+  "name": "我的媒体库",
+  "items": [
+    {
+      "id": 1,
+      "title": "替换为你拥有或已获授权的视频",
+      "tags": ["我的视频"],
+      "episodes": [
+        {"title": "第一段", "url": "https://media.example.com/replace-with-owned-video.mp4", "format": "file"}
+      ]
+    }
+  ]
+}

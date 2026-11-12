@@ -1,100 +1,98 @@
-//! 业务服务：只编排领域命令，所有上游细节交给适配器。
-
-mod account_service;
-mod catalog_service;
-mod playback_service;
-mod post_service;
-
-use crate::adapters::edge_v1::EdgeV1Adapter;
-use crate::api::Api;
-use crate::domain::DomainCommand;
-use crate::infra::source;
-use serde_json::Value;
-
-pub(crate) fn adapter(api: &Api) -> EdgeV1Adapter {
-    let origin = source::base();
-    let token = api.session.token(&origin);
-    EdgeV1Adapter::new(origin, token)
-}
-
-pub(crate) fn to_json<T: serde::Serialize>(value: &T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|e| e.to_string())
-}
-
-/// `data_call` 的总入口：领域命令 → service → EdgeV1Adapter。
-pub async fn dispatch(api: &Api, command: DomainCommand) -> Result<Value, String> {
+//! Source-independent read-only media operations.
+use crate::{adapters::playlist, domain::DomainCommand, infra::source};
+use serde_json::{json, Value};
+pub async fn dispatch(command: DomainCommand) -> Result<Value, String> {
+    if matches!(command, DomainCommand::Boot) {
+        return Ok(
+            json!({"base":source::base(),"gate":source::gate_state(),"user":null,"logged_in":false,"strict_security":true,"cli_relaxed":false}),
+        );
+    }
+    let source = source::current()?;
+    let list = &source.manifest;
     match command {
-        DomainCommand::Boot => Ok(serde_json::json!({
-            "base": source::base(),
-            "gate": source::gate_state(),
-            "user": api.session.user(&source::base()),
-            "logged_in": api.session.token(&source::base()).is_some(),
-            "strict_security": crate::network_policy::strict_security(),
-            "cli_relaxed": false,
-        })),
-        DomainCommand::Login { username, password } => {
-            account_service::login(api, username, password).await
+        DomainCommand::Feed { page, size } => {
+            Ok(playlist::paged(list.items.iter().collect(), page, size))
         }
-        DomainCommand::Register {
-            username,
-            password,
-            confirm_password,
-            email,
+        DomainCommand::Video { id } => Ok(playlist::detail(list.item(id)?)),
+        DomainCommand::Play { id, ep } => {
+            let item = list.item(id)?;
+            let e = item
+                .episodes
+                .get(ep.checked_sub(1).ok_or("无效集数")? as usize)
+                .ok_or("没有这一集")?;
+            let mut v = json!({"id":id,"ep_num":ep,"title":e.title,"duration":e.duration});
+            if let Some(path) = source.local_files.get(&(id as u64)) {
+                if !path.is_file() {
+                    return Err("本机视频已移动或删除，请重新导入".into());
+                }
+                let address = format!("{}/local?id={id}", crate::media::LOCAL_ORIGIN);
+                v["video_url"] = json!(address);
+                v["streams"] = json!({"main":address});
+            } else {
+                let hls = e.format == "hls"
+                    || (e.format == "auto"
+                        && url::Url::parse(&e.url)
+                            .is_ok_and(|u| u.path().to_ascii_lowercase().ends_with(".m3u8")));
+                let route = if hls { "hls" } else { "stream" };
+                let enc: String = url::form_urlencoded::byte_serialize(e.url.as_bytes()).collect();
+                let address = format!("{}/{route}?u={enc}", crate::media::LOCAL_ORIGIN);
+                v["video_url"] = json!(address);
+                v["streams"] = json!({"main":address});
+            }
+            Ok(v)
+        }
+        DomainCommand::Search {
+            q,
+            page,
+            size,
+            kind,
         } => {
-            account_service::register(api, username, password, confirm_password, email)
-                .await
+            if kind == "post" {
+                return Err("当前媒体库不提供帖子".into());
+            }
+            let query = q.to_lowercase();
+            let items = list
+                .items
+                .iter()
+                .filter(|i| {
+                    i.title.to_lowercase().contains(&query)
+                        || i.description.to_lowercase().contains(&query)
+                        || i.tags.iter().any(|t| t.to_lowercase().contains(&query))
+                })
+                .collect();
+            let mut result = playlist::paged(items, page, size);
+            result["keyword"] = json!(q);
+            Ok(result)
         }
-        DomainCommand::Logout => account_service::logout(api).await,
-        DomainCommand::Me => account_service::me(api).await,
-        DomainCommand::Feed { page, size } => catalog_service::feed(api, page, size).await,
-        DomainCommand::Topics => catalog_service::topics(api).await,
-        DomainCommand::Topic { slug } => catalog_service::topic(api, slug).await,
-        DomainCommand::Tags => catalog_service::tags(api).await,
-        DomainCommand::TagVideos { tag, page, size } => {
-            catalog_service::tag_videos(api, tag, page, size).await
+        DomainCommand::Tags => {
+            let mut tags = std::collections::BTreeSet::new();
+            for i in &list.items {
+                for t in &i.tags {
+                    tags.insert(t.clone());
+                }
+            }
+            Ok(
+                json!({"categories":[{"name":"媒体标签","tags":tags.into_iter().enumerate().map(|(i,n)|json!({"id":i+1,"name":n,"slug":n})).collect::<Vec<_>>()}]}),
+            )
         }
-        DomainCommand::Category { cate, page, size } => {
-            catalog_service::category(api, cate, page, size).await
-        }
-        DomainCommand::Rank { kind } => catalog_service::rank(api, kind).await,
-        DomainCommand::Search { q, page, size, kind } => {
-            catalog_service::search(api, q, page, size, kind).await
-        }
-        DomainCommand::SearchHot => catalog_service::search_hot(api).await,
-        DomainCommand::Posts { page, size } => post_service::posts(api, page, size).await,
-        DomainCommand::Post { id } => post_service::post(api, id).await,
-        DomainCommand::PostPlayback { id } => post_service::post_playback(api, id).await,
-        DomainCommand::PostLike { id, on } => post_service::post_like(api, id, on).await,
-        DomainCommand::PostCollect { id, on } => post_service::post_collect(api, id, on).await,
-        DomainCommand::PostComments { id, page, size } => {
-            post_service::post_comments(api, id, page, size).await
-        }
-        DomainCommand::PostCategories => post_service::post_categories(api).await,
-        DomainCommand::PostCategory { route, page, size } => {
-            post_service::post_category(api, route, page, size).await
-        }
-        DomainCommand::Video { id } => playback_service::video(api, id).await,
-        DomainCommand::Play { id, ep } => playback_service::play(api, id, ep).await,
-        DomainCommand::Comments { id, ep, page, size } => {
-            playback_service::comments(api, id, ep, page, size).await
-        }
-        DomainCommand::CommentSend {
-            id,
-            ep,
-            text,
-            reply_id,
-        } => playback_service::comment_send(api, id, ep, text, reply_id).await,
-        DomainCommand::Like { id, ep, on } => playback_service::like(api, id, ep, on).await,
-        DomainCommand::Collect { id, on } => playback_service::collect(api, id, on).await,
-        DomainCommand::Follow { uid, on } => playback_service::follow(api, uid, on).await,
-        DomainCommand::Related { id } => playback_service::related(api, id).await,
-        DomainCommand::Following { page, size } => {
-            account_service::following(api, page, size).await
-        }
-        DomainCommand::User { id } => account_service::user(api, id).await,
-        DomainCommand::UserStats { id } => account_service::user_stats(api, id).await,
-        DomainCommand::UserVideos { id, page, size } => {
-            account_service::user_videos(api, id, page, size).await
-        }
+        DomainCommand::Category { cate, page, size }
+        | DomainCommand::TagVideos {
+            tag: cate,
+            page,
+            size,
+        } => Ok(playlist::paged(
+            list.items
+                .iter()
+                .filter(|i| i.tags.contains(&cate))
+                .collect(),
+            page,
+            size,
+        )),
+        DomainCommand::Related { id } => Ok(
+            json!({"items":list.items.iter().filter(|i|i.id!=id as u64).take(12).map(playlist::card).collect::<Vec<_>>()}),
+        ),
+        DomainCommand::SearchHot => Ok(json!({"items":[]})),
+        DomainCommand::Logout => Ok(json!({"ok":true})),
+        _ => Err("当前媒体库不提供此能力".into()),
     }
 }

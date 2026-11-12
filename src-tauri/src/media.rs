@@ -5,8 +5,6 @@
 //! macOS 为 `hg://localhost`，见 [`LOCAL_ORIGIN`]）。
 
 use crate::net::fetch_bytes;
-use aes::cipher::{BlockDecrypt, KeyInit};
-use aes::Aes128;
 use once_cell::sync::Lazy;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
@@ -25,9 +23,6 @@ pub const LOCAL_ORIGIN: &str = "http://hg.localhost";
 pub const LOCAL_ORIGIN: &str = crate::linux_http::ORIGIN;
 #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "linux")))]
 pub const LOCAL_ORIGIN: &str = "hg://localhost";
-
-const IMG_KEY: &[u8] = b"f5d965df75336270";
-const IMG_IV: &[u8] = b"97b60394abc2fbe1";
 
 static IMG_CACHE: Lazy<Mutex<HashMap<String, Arc<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -53,39 +48,6 @@ fn cache_put<V: Clone>(map: &Mutex<HashMap<String, V>>, key: String, val: V, max
         }
     }
     m.insert(key, val);
-}
-
-/* ───────────────────────── AES ───────────────────────── */
-
-fn aes_cbc_decrypt(data: &[u8]) -> Option<Vec<u8>> {
-    if data.is_empty() || data.len() % 16 != 0 {
-        return None;
-    }
-    let cipher = Aes128::new_from_slice(IMG_KEY).ok()?;
-    let mut prev = [0u8; 16];
-    prev.copy_from_slice(IMG_IV);
-    let mut out = Vec::with_capacity(data.len());
-    for chunk in data.chunks(16) {
-        let mut ct = [0u8; 16];
-        ct.copy_from_slice(chunk);
-        let mut block = ct;
-        cipher.decrypt_block((&mut block).into());
-        for i in 0..16 {
-            out.push(block[i] ^ prev[i]);
-        }
-        prev = ct;
-    }
-    Some(out)
-}
-
-fn strip_padding(mut buf: Vec<u8>) -> Vec<u8> {
-    let pad = *buf.last().unwrap_or(&0) as usize;
-    if pad > 0 && pad <= 16 && buf.len() >= pad {
-        if buf[buf.len() - pad..].iter().all(|b| *b as usize == pad) {
-            buf.truncate(buf.len() - pad);
-        }
-    }
-    buf
 }
 
 fn image_kind(buf: &[u8]) -> Option<&'static str> {
@@ -114,12 +76,10 @@ pub async fn load_image(url: &str) -> Result<(String, Arc<Vec<u8>>), String> {
         return Ok((kind.to_string(), hit));
     }
     let (_, bytes) = fetch_bytes(url).await?;
-    let plain = if image_kind(&bytes).is_some() {
-        bytes
-    } else {
-        let dec = aes_cbc_decrypt(&bytes).ok_or_else(|| "封面解密失败".to_string())?;
-        strip_padding(dec)
-    };
+    if image_kind(&bytes).is_none() {
+        return Err("封面必须是普通 JPEG、PNG、GIF 或 WebP 图片".into());
+    }
+    let plain = bytes;
     let kind = image_kind(&plain).unwrap_or("image/jpeg").to_string();
     let arc = Arc::new(plain);
     cache_put(&IMG_CACHE, url.to_string(), arc.clone(), IMG_CACHE_MAX);
@@ -286,9 +246,19 @@ pub async fn load_segment(url: &str) -> Result<(Option<String>, Arc<Vec<u8>>), S
     let len = bytes.len();
     let arc = Arc::new(bytes);
     if len <= 65536 {
-        cache_put(&KEY_CACHE, url.to_string(), (mime.clone(), arc.clone()), KEY_CACHE_MAX);
+        cache_put(
+            &KEY_CACHE,
+            url.to_string(),
+            (mime.clone(), arc.clone()),
+            KEY_CACHE_MAX,
+        );
     } else if len <= SEG_CACHE_MAX_BYTES {
-        cache_put(&SEG_CACHE, url.to_string(), (mime.clone(), arc.clone()), SEG_CACHE_MAX);
+        cache_put(
+            &SEG_CACHE,
+            url.to_string(),
+            (mime.clone(), arc.clone()),
+            SEG_CACHE_MAX,
+        );
     }
     Ok((Some(mime), arc))
 }
@@ -319,11 +289,153 @@ fn respond(status: u16, ctype: &str, body: Vec<u8>, cache: &str) -> Response<Vec
         // WKWebView 需要 Content-Length / Accept-Ranges 才肯复用已缓冲的分片
         .header("Content-Length", len)
         .header("Accept-Ranges", "bytes")
-        .header("Access-Control-Expose-Headers", "Content-Length, Content-Type, Accept-Ranges")
+        .header(
+            "Access-Control-Expose-Headers",
+            "Content-Length, Content-Type, Accept-Ranges",
+        )
         .header("X-Content-Type-Options", "nosniff")
         .header("Cache-Control", cache)
         .body(body)
         .unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+const STREAM_CHUNK: u64 = 8 * 1024 * 1024;
+
+fn local_file_response(query: &str, range: Option<&str>) -> Response<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let id = url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == "id")
+        .and_then(|(_, v)| v.parse::<u64>().ok());
+    let result = (|| {
+        let path = crate::infra::source::local_file(id.ok_or("无效的媒体标识")?)?;
+        let mut file = std::fs::File::open(&path).map_err(|_| "本机视频已移动或无法访问")?;
+        let length = file.metadata().map_err(|_| "无法读取文件信息")?.len();
+        if length == 0 {
+            return Err("视频文件为空".into());
+        }
+        let request = bounded_range(range)?;
+        let (left, right) = request[6..].split_once('-').ok_or("无效的 Range")?;
+        let (start, end) = if left.is_empty() {
+            let suffix = right.parse::<u64>().map_err(|_| "无效的 Range")?;
+            (length.saturating_sub(suffix), length - 1)
+        } else {
+            let start = left.parse::<u64>().map_err(|_| "无效的 Range")?;
+            let end = right
+                .parse::<u64>()
+                .map_err(|_| "无效的 Range")?
+                .min(length - 1);
+            if start >= length {
+                return Err("Range 超出文件大小".into());
+            }
+            (start, end)
+        };
+        let mut bytes = vec![0; (end - start + 1) as usize];
+        file.seek(SeekFrom::Start(start))
+            .map_err(|_| "定位视频失败")?;
+        file.read_exact(&mut bytes).map_err(|_| "读取视频失败")?;
+        let kind = match path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "webm" => "video/webm",
+            "mov" => "video/quicktime",
+            _ => "video/mp4",
+        };
+        let status = if range.is_none() && end + 1 == length {
+            200
+        } else {
+            206
+        };
+        let mut response = respond(status, kind, bytes, "no-store");
+        if status == 206 {
+            response.headers_mut().insert(
+                "Content-Range",
+                format!("bytes {start}-{end}/{length}")
+                    .parse()
+                    .map_err(|_| "无效的 Range")?,
+            );
+        }
+        Ok::<_, String>(response)
+    })();
+    result.unwrap_or_else(|e| respond(416, "text/plain", e.into_bytes(), "no-store"))
+}
+fn bounded_range(raw: Option<&str>) -> Result<String, String> {
+    let raw = raw
+        .unwrap_or("bytes=0-")
+        .strip_prefix("bytes=")
+        .ok_or("无效的 Range")?;
+    let (start, end) = raw.split_once('-').ok_or("无效的 Range")?;
+    if start.is_empty() {
+        let suffix: u64 = end.parse().map_err(|_| "无效的 Range")?;
+        if suffix == 0 {
+            return Err("无效的 Range".into());
+        }
+        return Ok(format!("bytes=-{}", suffix.min(STREAM_CHUNK)));
+    }
+    let start: u64 = start.parse().map_err(|_| "无效的 Range")?;
+    let maximum = start.saturating_add(STREAM_CHUNK - 1);
+    let end: u64 = if end.is_empty() {
+        maximum
+    } else {
+        end.parse::<u64>().map_err(|_| "无效的 Range")?.min(maximum)
+    };
+    if end < start {
+        return Err("无效的 Range".into());
+    }
+    Ok(format!("bytes={start}-{end}"))
+}
+async fn stream_response(target: &str, range: Option<&str>) -> Response<Vec<u8>> {
+    let request = match bounded_range(range) {
+        Ok(v) => v,
+        Err(_) => return respond(416, "text/plain", b"invalid range".to_vec(), "no-store"),
+    };
+    let result = async {
+        let response = crate::net::get_range(target, &request).await?;
+        let status = response.status().as_u16();
+        if !matches!(status, 200 | 206) {
+            return Err(format!("HTTP {status}"));
+        }
+        let kind = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("video/mp4")
+            .to_string();
+        let content_range = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned);
+        let bytes = crate::net::bounded_body(
+            response,
+            if status == 206 {
+                STREAM_CHUNK as usize
+            } else {
+                32 * 1024 * 1024
+            },
+        )
+        .await?;
+        let mut out = respond(status, &kind, bytes, "no-store");
+        if status == 206 {
+            let value = content_range.ok_or("服务器未返回 Content-Range")?;
+            out.headers_mut().insert(
+                "Content-Range",
+                value.parse().map_err(|_| "无效的 Content-Range")?,
+            );
+            out.headers_mut().insert(
+                "Access-Control-Expose-Headers",
+                tauri::http::HeaderValue::from_static(
+                    "Content-Length, Content-Type, Accept-Ranges, Content-Range",
+                ),
+            );
+        }
+        Ok::<_, String>(out)
+    }
+    .await;
+    result.unwrap_or_else(|e| respond(502, "text/plain", e.into_bytes(), "no-store"))
 }
 
 /// 主清单的子清单也经 /seg 返回：必须继续改写，不能把内层 URL 原样交给播放器。
@@ -365,7 +477,15 @@ fn segment_response(
 ///
 /// `origin` 是本平台自定义协议的完整基址，见 [`LOCAL_ORIGIN`]；用于改写 m3u8 里的
 /// 分片与 key 地址。正常情况下调用方直接传 [`LOCAL_ORIGIN`]。
-pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> {
+pub async fn handle(
+    path: &str,
+    query: &str,
+    origin: &str,
+    range: Option<&str>,
+) -> Response<Vec<u8>> {
+    if path == "/local" {
+        return local_file_response(query, range);
+    }
     let target = query
         .split('&')
         .find_map(|kv| kv.strip_prefix("u="))
@@ -388,6 +508,7 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> 
         serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target)}),
     );
     let response = match path {
+        "/stream" => stream_response(&target, range).await,
         "/img" => match load_image(&target).await {
             Ok((kind, bytes)) => {
                 respond(200, &kind, bytes.as_ref().clone(), "public, max-age=86400")
@@ -404,7 +525,9 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> 
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
         "/seg" => match load_segment(&target).await {
-            Ok((ctype, bytes)) => segment_response(&target, ctype.as_deref(), bytes.as_ref().clone(), origin),
+            Ok((ctype, bytes)) => {
+                segment_response(&target, ctype.as_deref(), bytes.as_ref().clone(), origin)
+            }
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
         _ => respond(404, "text/plain", b"not found".to_vec(), "no-store"),
@@ -419,6 +542,19 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_and_open_ranges_are_bounded_and_invalid_ranges_rejected() {
+        assert_eq!(bounded_range(None).unwrap(), "bytes=0-8388607");
+        assert_eq!(
+            bounded_range(Some("bytes=100-999999999")).unwrap(),
+            "bytes=100-8388707"
+        );
+        assert_eq!(bounded_range(Some("bytes=-50")).unwrap(), "bytes=-50");
+        for raw in ["bytes=1-0", "bytes=0-1,4-5", "bytes=-0", "garbage"] {
+            assert!(bounded_range(Some(raw)).is_err());
+        }
+    }
 
     #[test]
     fn dateranges_keep_timing_and_scte_metadata_but_drop_external_resources() {
@@ -476,124 +612,5 @@ mod tests {
             LOCAL_ORIGIN,
         );
         assert!(bom.body().starts_with(b"#EXTM3U\n"));
-    }
-
-    /// 联网测试：默认跳过，手动跑 `cargo test --lib -- --ignored`。
-    /// 依赖上游 `/api/videos/117/play` 返回的实时播放地址。
-    #[tokio::test]
-    #[ignore = "联网测试：依赖上游实时播放地址，手动用 --ignored 运行"]
-    async fn live_play_chain() {
-        use crate::net::edge;
-        let play = edge(
-            &crate::net::base(),
-            "GET",
-            "/api/videos/117/play?ep=3&page_texts=0",
-            None,
-            None,
-        )
-        .await
-        .expect("play api");
-        let url = play["video_url"].as_str().expect("video_url").to_string();
-        println!("play url: {}", &url[..url.len().min(90)]);
-        let (_, bytes) = fetch_bytes(&url).await.expect("fetch playlist");
-        let text = String::from_utf8_lossy(&bytes);
-        println!(
-            "raw playlist len={} head={}",
-            text.len(),
-            &text[..text.len().min(160)]
-        );
-        let q = format!("u={}", enc(&url));
-        let resp = handle("/hls", &q, LOCAL_ORIGIN).await;
-        let body = String::from_utf8_lossy(resp.body()).to_string();
-        println!("proxied status={} len={}", resp.status(), body.len());
-        assert!(body.contains("#EXTM3U"));
-        // 取一个分片验证
-        let seg_line = body
-            .lines()
-            .find(|l| !l.starts_with('#') && l.contains("/seg?u="))
-            .expect("seg line")
-            .to_string();
-        println!("seg line: {}", &seg_line[..seg_line.len().min(120)]);
-        let seg_q = seg_line.split("?u=").nth(1).unwrap();
-        let seg = handle("/seg", &format!("u={seg_q}"), LOCAL_ORIGIN).await;
-        println!("segment status={} len={}", seg.status(), seg.body().len());
-        assert_eq!(seg.status(), 200);
-        assert!(seg.body().len() > 1000);
-    }
-
-    /// 离线回归：不再依赖带 auth_key 时效的真实上游地址（旧地址已过期，会 403）。
-    /// 与真实播放列表同构：带签名的分片地址 + 加密 KEY + 相对路径分片。
-    #[test]
-    fn playlist_rewrite_works() {
-        let base = "https://cdn.example/videos5/abc/abc.m3u8?auth_key=9999999999-0-0-deadbeef&v=3&via=hgdj";
-        let text = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin?auth_key=9999999999-0-0-deadbeef\"\n#EXTINF:4,\nseg-1.ts?auth_key=9999999999-0-0-deadbeef\n";
-        let body = rewrite_playlist(base, text, LOCAL_ORIGIN);
-
-        assert!(body.contains("#EXTM3U"), "not a playlist: {body}");
-        assert!(
-            body.contains(&format!("{LOCAL_ORIGIN}/seg?u=")),
-            "segments not rewritten: {body}"
-        );
-        // 分片必须绝对化到源站，并保留签名查询串。
-        assert!(
-            body.contains("https%3A%2F%2Fcdn%2Eexample%2Fvideos5%2Fabc%2Fseg%2D1%2Ets%3Fauth%5Fkey%3D"),
-            "segment not absolutized with query: {body}"
-        );
-        // 加密 KEY 也要走本地代理，否则 hls.js 会直接打源站被 CORS 拦住。
-        assert!(
-            body.contains("URI=\"") && body.contains("%2Fkey%2Ebin%3Fauth%5Fkey%3D"),
-            "key uri not rewritten: {body}"
-        );
-        assert!(!body.contains("URI=\"key.bin"), "key uri left relative");
-    }
-
-    /// 离线回归：用已知明文 + 项目内置 key/IV 构造密文，验证解密、去填充与类型识别。
-    /// 真实封面抓取那条仍保留为 `#[ignore]` 联网测试。
-    #[test]
-    fn cover_decrypt_roundtrip() {
-        use aes::cipher::BlockEncrypt;
-
-        let plain = b"\xFF\xD8\xFF\xE0cover-payload-for-test".to_vec();
-        let mut buf = plain.clone();
-        let pad = 16 - plain.len() % 16;
-        buf.extend(std::iter::repeat_n(pad as u8, pad));
-
-        let cipher = Aes128::new_from_slice(IMG_KEY).expect("key");
-        let mut prev = [0u8; 16];
-        prev.copy_from_slice(IMG_IV);
-        let mut encrypted = Vec::with_capacity(buf.len());
-        for chunk in buf.chunks(16) {
-            let mut block = [0u8; 16];
-            block.copy_from_slice(chunk);
-            for i in 0..16 {
-                block[i] ^= prev[i];
-            }
-            let mut out_block = block;
-            cipher.encrypt_block((&mut out_block).into());
-            encrypted.extend_from_slice(&out_block);
-            prev = out_block;
-        }
-
-        let decrypted = aes_cbc_decrypt(&encrypted).expect("decrypt");
-        let stripped = strip_padding(decrypted);
-        assert_eq!(stripped, plain);
-        assert_eq!(image_kind(&stripped), Some("image/jpeg"));
-    }
-
-    /// 联网测试：默认跳过。封面地址带时效签名，不能硬编码进仓库，
-    /// 需要用当次上游返回的地址显式传入：
-    /// `HGHUBX_TEST_COVER_URL='https://…?auth_key=…' cargo test --lib -- --ignored`
-    #[tokio::test]
-    #[ignore = "联网测试：需要 HGHUBX_TEST_COVER_URL，手动用 --ignored 运行"]
-    async fn cover_decrypt_works() {
-        let url = std::env::var("HGHUBX_TEST_COVER_URL")
-            .expect("需要设置 HGHUBX_TEST_COVER_URL 为当前有效的封面地址");
-        match load_image(&url).await {
-            Ok((kind, bytes)) => {
-                println!("kind={kind} len={}", bytes.len());
-                assert!(kind.starts_with("image/"));
-            }
-            Err(e) => panic!("image failed: {e}"),
-        }
     }
 }

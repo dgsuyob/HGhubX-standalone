@@ -1,9 +1,10 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { tracePlayback } from "./player/diagnostics";
 import { dataCall, type DataCommand } from "./data/client";
 import { commands } from "./data/commands";
 import {
   checkUpdate, clearCache, gateOpen, gateReset, gateState, logLine, netDiag, openUrl, securitySet,
-  setOrientation,
+  setOrientation, sourceImportManifest, sourceOpenFiles, sourceOpenDemo, sourceReload,
 } from "./platform";
 import type {
   BootInfo, CommentPage, Detail, HotWord, Paged, PlayInfo, Post, PostCategory, RankItem, TagGroup, TopicCard, TopicDetail, User, UserProfile, VideoCard,
@@ -49,11 +50,11 @@ export const LOCAL =
 /** src 是否已是本地协议地址（避免在详情页把代理地址再包一层） */
 export const isLocalMedia = (src: string) => src.startsWith(`${LOCAL}/`);
 
-/** 封面：经本地协议解密（站点封面是 AES 密文）。 */
+/** Ordinary image media passes through the validated native transport. */
 export const cover = (url?: string, _w = 480) =>
   url ? `${LOCAL}/img?u=${encodeURIComponent(url)}` : "";
 
-/** 播放列表：经本地协议改写分片地址，规避 CORS 与防盗链。 */
+/** HLS resources use the same validated transport on every platform. */
 export const playlist = (url: string) => `${LOCAL}/hls?u=${encodeURIComponent(url)}`;
 
 /* ── 调用封装 ───────────────────────────────────────────── */
@@ -122,6 +123,7 @@ async function call<T>(cmd: string, command: DataCommand): Promise<T> {
 export const api = {
   boot: () => call<BootInfo>("app_boot", commands.boot()),
   gateState,
+  sourceImportManifest, sourceOpenFiles, sourceOpenDemo, sourceReload,
   gateOpen,
   gateReset,
   securitySet,
@@ -159,7 +161,12 @@ export const api = {
   postPlayback: (id: number) => call<{ mode?: number; videos?: { index: number; url: string }[] }>("api_post_playback", commands.postPlayback(id)),
 
   video: (id: number) => call<Detail>("api_video", commands.video(id)),
-  play: (id: number, ep: number) => call<PlayInfo>("api_play", commands.play(id, ep)),
+  play: async (id: number, ep: number) => {
+    const info = await call<PlayInfo>("api_play", commands.play(id, ep));
+    if (!info.local_path) return info;
+    const src = convertFileSrc(info.local_path);
+    return { ...info, video_url: src, streams: { main: src } };
+  },
 
   comments: (id: number, ep: number, page = 1, size = 20) =>
     call<CommentPage>("api_comments", commands.comments(id, ep, page, size)),
@@ -193,53 +200,6 @@ export const api = {
 export const hostOf = (url: string) => {
   try { return new URL(url).host; } catch { return url.replace(/^https?:\/\//, "").replace(/\/.*$/, ""); }
 };
-
-/* ── 自检：验证 webview → 本地协议 → 上游 的取流链路 ───────── */
-export async function selfTest(): Promise<string> {
-  const steps: string[] = [];
-  try {
-    const info = await api.play(117, 3);
-    steps.push(`play:${info?.video_url ? "ok" : "empty"}`);
-    const hlsUrl = `${LOCAL}/hls?u=${encodeURIComponent(info.video_url)}`;
-    const r1 = await fetch(hlsUrl);
-    const txt = await r1.text();
-    steps.push(`hls:${r1.status}/${txt.length}/${txt.startsWith("#EXTM3U") ? "m3u8" : "bad"}`);
-    const keyLine = txt.split("\n").find((l) => l.startsWith("#EXT-X-KEY"));
-    if (keyLine) {
-      const m = keyLine.match(/URI="([^"]+)"/);
-      if (m) {
-        const rustUrl = m[1];
-        steps.push(`rustUrl:${rustUrl.slice(0, 60)}`);
-        // A/B：用 JS 重新编码同一条上游地址
-        const inner = decodeURIComponent(rustUrl.split("?u=")[1] || "");
-        steps.push(`inner:${inner.slice(0, 50)}`);
-        try {
-          const rk = await fetch(rustUrl);
-          const bk = await rk.arrayBuffer();
-          steps.push(`keyRust:${rk.status}/${bk.byteLength}`);
-        } catch (e) { steps.push(`keyRust:throw:${(e as Error).message.slice(0, 30)}`); }
-        try {
-          const rk2 = await fetch(`${LOCAL}/seg?u=${encodeURIComponent(inner)}`);
-          const bk2 = await rk2.arrayBuffer();
-          steps.push(`keyJs:${rk2.status}/${bk2.byteLength}`);
-        } catch (e) { steps.push(`keyJs:throw:${(e as Error).message.slice(0, 30)}`); }
-      }
-    }
-    const segLine = txt.split("\n").find((l) => l && !l.startsWith("#") && l.includes("/seg?u="));
-    if (segLine) {
-      try {
-        const r2 = await fetch(segLine.trim());
-        const buf = await r2.arrayBuffer();
-        steps.push(`seg:${r2.status}/${buf.byteLength}`);
-      } catch (e) { steps.push(`seg:throw:${(e as Error).message.slice(0, 40)}`); }
-    } else steps.push("seg:no-line");
-  } catch (e) {
-    steps.push(`err:${(e as Error).message.slice(0, 60)}`);
-  }
-  return steps.join(" | ");
-}
-
-/* ── 格式化 ─────────────────────────────────────────────── */
 
 export const fmt = (n: number | undefined) => {
   const v = Number(n) || 0;

@@ -74,8 +74,7 @@ type Persist = {
   preferHevc: boolean;
 };
 
-const LS = appDataKey("default");
-const LEGACY_LS = "hghubx_app_v1";
+const EMPTY_SOURCE = "unconfigured-v2";
 const DEFAULTS: Persist = {
   likes: [], favs: [], history: [], follows: [],
   muted: true, muteOnStartup: true, volume: 0.7, searchHist: [], swipeEp: true, preferHevc: false,
@@ -98,9 +97,9 @@ function normalizeHistory(raw: unknown): WatchProgress[] {
   return out;
 }
 
-function loadPersist(): Persist {
+function loadPersist(sourceId: string): Persist {
   try {
-    const raw = localStorage.getItem(LS) ?? localStorage.getItem(LEGACY_LS);
+    const raw = localStorage.getItem(appDataKey(sourceId));
     if (!raw) return DEFAULTS;
     const p = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Persist>) };
     // 只在启动时应用；本次使用中取消静音不会关闭此偏好。
@@ -165,7 +164,8 @@ type Store = {
   lineEpoch: number;
   /** 门牌：未激活时只显示 SourceGate，不拉业务数据 */
   gate: GateState; gateReady: boolean; gateBusy: boolean; gateError: string;
-  activateGate: (address: string) => Promise<void>;
+  activateGate: (address: string, allowPrivate?: boolean) => Promise<void>;
+  selectSource: (next: GateState) => void;
   resetGate: () => Promise<void>;
 };
 
@@ -174,7 +174,12 @@ export const useStore = () => useContext(Ctx);
 let seq = 0;
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [p, setP] = useState<Persist>(loadPersist);
+  const [persisted, setPersisted] = useState(() => ({ sourceId: EMPTY_SOURCE, data: loadPersist(EMPTY_SOURCE) }));
+  const p = persisted.data;
+  const sourceRef = useRef(EMPTY_SOURCE);
+  const setP = useCallback((change: Persist | ((old: Persist) => Persist)) => {
+    setPersisted(old => ({ ...old, data: typeof change === "function" ? change(old.data) : change }));
+  }, []);
   const [theme, setThemeState] = useState<Theme>(readTheme);
   const [tab, setTabRaw] = useState<Tab>("home");
   const [stack, setStack] = useState<Page[]>([]);
@@ -201,12 +206,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [theme]);
 
   useEffect(() => {
-    try { localStorage.setItem(LS, JSON.stringify(p)); } catch { /* ignore */ }
-  }, [p]);
+    try { if (persisted.sourceId !== EMPTY_SOURCE) localStorage.setItem(appDataKey(persisted.sourceId), JSON.stringify(p)); } catch { /* ignore */ }
+  }, [persisted, p]);
+
+  const selectSource = useCallback((next: GateState) => {
+    const key = next.id || EMPTY_SOURCE;
+    sourceRef.current = key;
+    setPersisted(old => old.sourceId === key ? old : { sourceId: key, data: loadPersist(key) });
+    setGate(next); setSiteBase(next.base); setUser(null); setStack([]); setTabRaw("home"); setLoginOpen(false);
+    setLineEpoch(n => n + 1);
+  }, []);
 
   const applyBoot = useCallback((r: BootInfo) => {
+    if (r.gate?.id && sourceRef.current !== EMPTY_SOURCE && r.gate.id !== sourceRef.current) return;
     if (r.user && r.user.id) setUser(r.user);
-    if (r.gate) setGate(r.gate);
+    if (r.gate) {
+      const key = r.gate.id || EMPTY_SOURCE; sourceRef.current = key;
+      setPersisted(old => old.sourceId === key ? old : { sourceId: key, data: loadPersist(key) });
+      setGate(r.gate);
+    }
     // 兼容旧壳（无 gate_state / boot 不带 gate）：有 base 即视为已激活，避免老用户被门牌页挡住。
     else if (r.base) setGate({ base: r.base, adapter: "edge_v1", activated: true });
     setSiteBase(r.base || r.gate?.base || "");
@@ -224,7 +242,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     api.gateState()
       .then((g) => {
         if (!alive) return;
-        setGate(g);
+        selectSource(g);
         setGateReady(true);
         if (g.activated) api.boot().then((r) => { if (alive) applyBoot(r); }).catch(() => {});
       })
@@ -237,21 +255,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => { alive = false; };
   }, [applyBoot]);
 
-  const activateGate = useCallback(async (address: string) => {
+  const activateGate = useCallback(async (address: string, allowPrivate = false) => {
     const raw = address.trim();
     if (!raw) { setGateError("请输入接入地址"); throw new Error("请输入接入地址"); }
     setGateBusy(true);
     setGateError("");
     try {
-      const next = await api.gateOpen(raw);
-      setGate(next);
-      setSiteBase(next.base);
-      setUser(null);
-      setStack([]);
-      setTabRaw("home");
-      setLoginOpen(false);
-      setLineEpoch((n) => n + 1);
-      api.boot().then(applyBoot).catch(() => {});
+      const next = await api.gateOpen(raw, allowPrivate);
+      selectSource(next);
     } catch (e) {
       const msg = (e as Error).message || "接入失败";
       setGateError(msg);
@@ -259,16 +270,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setGateBusy(false);
     }
-  }, [applyBoot]);
+  }, [selectSource]);
 
   const resetGate = useCallback(async () => {
     const next = await api.gateReset();
-    setGate(next);
-    setUser(null);
-    setStack([]);
-    setTabRaw("home");
-    setSiteBase("");
-  }, []);
+    selectSource(next);
+  }, [selectSource]);
 
   const setStrictSecurity = useCallback(async (on: boolean) => {
     if (!strictSecurityReady) throw new Error("安全设置尚未读取，请重新启动应用");
@@ -395,12 +402,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     searchHist: p.searchHist, addSearch, clearSearchHist,
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     toasts, toast, lineEpoch,
-    gate, gateReady, gateBusy, gateError, activateGate, resetGate,
+    gate, gateReady, gateBusy, gateError, activateGate, selectSource, resetGate,
   }), [theme, tab, setTab, stack, push, pop, user, loginOpen, logout,
     p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setSwipeEp, setPreferHevc, setVolume, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     toasts, toast, lineEpoch, theater, setTheater, fs, setFs, clean, setClean,
-    gate, gateReady, gateBusy, gateError, activateGate, resetGate]);
+    gate, gateReady, gateBusy, gateError, activateGate, selectSource, resetGate]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

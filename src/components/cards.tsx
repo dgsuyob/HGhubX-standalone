@@ -14,7 +14,7 @@ export function WaterfallCard({ v, onOpen }: { v: VideoCard; onOpen: () => void 
       <Img src={v.cover} />
       <div className="absolute inset-x-0 bottom-0 h-3/5 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
       <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-bold brand-grad elev-1">
-        {v.is_finished ? "已完结" : `更新至${v.episode_count}集`}
+        {`${v.episode_count} 个文件`}
       </span>
       <span className="absolute top-1.5 right-1.5 flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-black/45 backdrop-blur-sm text-[9px] font-semibold text-white/90">
         <IPlayF size={9} />{fmt(v.hot)}
@@ -22,7 +22,7 @@ export function WaterfallCard({ v, onOpen }: { v: VideoCard; onOpen: () => void 
       <div className="absolute inset-x-0 bottom-0 p-2">
         <div className="text-[11.5px] font-medium text-white leading-snug clamp-2 tsh">{v.title}</div>
         <div className="flex items-center justify-between mt-1">
-          <span className="text-[9.5px] text-white/65 truncate max-w-[60%]">{v.author?.name || "佚名"}</span>
+          <span className="text-[9.5px] text-white/65 truncate max-w-[60%]">{v.tags?.slice(0, 2).join(" · ") || "本机媒体库"}</span>
           <span className="flex items-center gap-0.5 text-[9.5px] text-white/75"><IHeartF size={10} className="text-white/70" />{fmt(v.like_count)}</span>
         </div>
       </div>

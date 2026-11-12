@@ -10,7 +10,11 @@ import type {
 export const logLine = (msg: string) => invoke("debug_log", { msg }).catch(() => {});
 
 export const gateState = () => invoke<GateState>("gate_state");
-export const gateOpen = (address: string) => invoke<GateState>("gate_open", { address });
+export const gateOpen = (address: string, allowPrivateNetwork = false) => invoke<GateState>("gate_open", { address, allowPrivateNetwork });
+export const sourceImportManifest = (text: string, allowPrivateNetwork = false) => invoke<GateState>("source_import_manifest", { text, allowPrivateNetwork });
+export const sourceOpenFiles = () => invoke<GateState | null>("source_open_files");
+export const sourceOpenDemo = () => invoke<GateState>("source_open_demo");
+export const sourceReload = () => invoke<GateState>("source_reload");
 export const gateReset = () => invoke<GateState>("gate_reset");
 
 export const securitySet = (strict: boolean) => invoke<boolean>("security_set", { strict });

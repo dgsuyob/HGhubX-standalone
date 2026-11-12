@@ -51,6 +51,7 @@ export type Detail = {
 };
 
 export type PlayInfo = {
+  local_path?: string;
   id: number;
   ep_num: number;
   duration: number;
@@ -187,7 +188,15 @@ export type User = {
 };
 
 /** 门牌 / 数据源状态：Rust `infra::source::GateState` 的镜像。 */
+export type SourceCapabilities = {
+  catalog: boolean; search: boolean; categories: boolean; related: boolean;
+  account: boolean; comments: boolean; posts: boolean; remote_interactions: boolean; share: boolean;
+};
 export type GateState = {
+  id?: string;
+  name?: string;
+  capabilities?: SourceCapabilities;
+  allow_private_network?: boolean;
   base: string;
   adapter: string;
   activated: boolean;

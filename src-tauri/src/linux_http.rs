@@ -49,14 +49,40 @@ fn serve(mut stream: TcpStream) -> std::io::Result<()> {
     if reader.read_line(&mut request_line)? == 0 {
         return Ok(());
     }
-    // 请求头整体丢弃：每个分片都是整包返回，不需要处理 Range。
+    let mut range = None;
+    let mut origin = None;
+    let mut host = None;
+    let mut header_bytes = request_line.len();
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line.trim_end().is_empty() {
+        header_bytes += reader.read_line(&mut line)?;
+        if header_bytes > 16384 {
+            return write_plain(&mut stream, 431, "headers too large");
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("origin") {
+                origin = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("host") {
+                host = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("range") {
+                range = Some(value.trim().to_string());
+            }
+        }
+        if line.trim_end().is_empty() {
             break;
         }
     }
 
+    if host.as_deref() != Some("127.0.0.1:17650")
+        || origin
+            .as_deref()
+            .is_some_and(|o| !crate::allowed_frontend_origin(o))
+    {
+        return write_plain(&mut stream, 403, "origin denied");
+    }
+    let cors = origin.as_deref().unwrap_or("tauri://localhost");
     let mut request = request_line.split_whitespace();
     let method = request.next().unwrap_or_default();
     let target = request.next().unwrap_or("/");
@@ -69,7 +95,8 @@ fn serve(mut stream: TcpStream) -> std::io::Result<()> {
         None => (target, ""),
     };
 
-    let response = tauri::async_runtime::block_on(crate::media::handle(path, query, ORIGIN));
+    let response =
+        tauri::async_runtime::block_on(crate::media::handle(path, query, ORIGIN, range.as_deref()));
     let (parts, body) = response.into_parts();
 
     let mut head = String::with_capacity(320);
@@ -78,13 +105,14 @@ fn serve(mut stream: TcpStream) -> std::io::Result<()> {
         parts.status.as_u16(),
         parts.status.canonical_reason().unwrap_or("OK")
     ));
-    head.push_str(&format!("Content-Length: {}\r\n", body.len()));
     for (name, value) in parts.headers.iter() {
         if let Ok(value) = value.to_str() {
             head.push_str(&format!("{}: {}\r\n", name.as_str(), value));
         }
     }
-    head.push_str("Access-Control-Allow-Origin: *\r\n");
+    head.push_str(&format!(
+        "Access-Control-Allow-Origin: {cors}\r\nVary: Origin\r\n"
+    ));
     head.push_str("Connection: close\r\n\r\n");
     stream.write_all(head.as_bytes())?;
     if method != "HEAD" {

@@ -9,7 +9,7 @@ import { IChevR, IClock, IHeart, ILogout, ISettings, IStar, IUser, IUserF } from
 /* 我的：结构固定（资料卡 + 我的收藏 / 观看历史）。
    收藏与观看记录都存在本地，所以未登录也照常展示；未登录时资料卡本身就是登录入口。 */
 export default function Profile({ wide }: { wide: boolean }) {
-  const { user, setLoginOpen, logout, history, favs, clearHistory, push } = useStore();
+  const { user, setLoginOpen, logout, history, favs, clearHistory, push, gate, setTab: setAppTab } = useStore();
   const [tab, setTab] = useState<"fav" | "history">("fav");
   const [cards, setCards] = useState<Detail[]>([]);
   const [loading, setLoading] = useState(false);
@@ -44,65 +44,7 @@ export default function Profile({ wide }: { wide: boolean }) {
       </div>
 
       <div className="flex-1 scroll-y px-4 pt-2 pb-24">
-        {/* 资料卡：已登录 / 未登录（点开登录抽屉） */}
-        {user ? (
-          <div className="rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 a-rise">
-            <Avatar size={56} name={user.nickname} hue={280} ring />
-            <div className="flex-1 min-w-0">
-              <div className="text-[16px] font-bold text-on truncate">{user.nickname}</div>
-              <div className="text-[11px] text-mut mt-0.5">@{user.username} · ID {user.id}</div>
-              <div className="flex gap-3 mt-2 text-[10.5px] text-mut">
-                <span>点赞 <b className="text-on">{fmt(user.counts?.like)}</b></span>
-                <span>收藏 <b className="text-on">{fmt(user.counts?.collect)}</b></span>
-                <span>关注 <b className="text-on">{fmt(user.counts?.following)}</b></span>
-              </div>
-            </div>
-            <button onClick={async () => { await logout(); }}
-              className="w-9 h-9 rounded-full bg-s3 flex items-center justify-center text-mut pressable" aria-label="退出登录">
-              <ILogout size={17} />
-            </button>
-          </div>
-        ) : (
-          <button onClick={() => setLoginOpen(true)}
-            className="w-full text-left rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 pressable a-rise">
-            <Avatar size={56} icon={<IUser size={26} />} hue={220} ring />
-            <div className="flex-1 min-w-0">
-              <div className="text-[16px] font-bold text-on">未登录</div>
-              <div className="text-[11px] text-mut mt-0.5">登录后可同步点赞、收藏与评论</div>
-              <div className="flex gap-3 mt-2 text-[10.5px] text-mut">
-                <span>收藏 <b className="text-on">{favs.length}</b></span>
-                <span>观看 <b className="text-on">{history.length}</b></span>
-              </div>
-            </div>
-            <span className="flex items-center gap-0.5 h-8 pl-3 pr-2 rounded-full bg-primary text-on-primary text-[11.5px] font-semibold">
-              登录<IChevR size={13} />
-            </span>
-          </button>
-        )}
-
-        {/* 关注 / 我的主页 */}
-        {user && (
-          <div className="grid grid-cols-2 gap-2.5 mt-4">
-            <button onClick={() => push({ kind: "following" })}
-              className="flex items-center gap-2.5 rounded-(--r-md) bg-s2 p-3 text-left pressable elev-1">
-              <span className="w-9 h-9 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center shrink-0"><IHeart size={18} /></span>
-              <span className="flex-1">
-                <span className="block text-[13.5px] font-semibold text-on">我的关注</span>
-                <span className="block text-[10px] text-mut mt-0.5">关注作者的更新</span>
-              </span>
-              <IChevR size={14} className="text-mut" />
-            </button>
-            <button onClick={() => push({ kind: "user", id: user.id, name: user.nickname })}
-              className="flex items-center gap-2.5 rounded-(--r-md) bg-s2 p-3 text-left pressable elev-1">
-              <span className="w-9 h-9 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center shrink-0"><IUserF size={18} /></span>
-              <span className="flex-1">
-                <span className="block text-[13.5px] font-semibold text-on">我的主页</span>
-                <span className="block text-[10px] text-mut mt-0.5">我的作品与资料</span>
-              </span>
-              <IChevR size={14} className="text-mut" />
-            </button>
-          </div>
-        )}
+        <div className="rounded-(--r-lg) bg-s1 p-5 elev-1 a-rise"><div className="text-[17px] font-semibold text-on">{gate.name || "我的媒体库"}</div><p className="mt-2 text-[12px] text-mut">{favs.length} 部收藏 · {history.length} 条观看记录</p><p className="mt-2 text-[11px] text-mut">这些记录只保存在本机，与其他媒体库分开。</p></div>
 
         {/* 我的内容 */}
         <div className="flex bg-s3 rounded-(--r-ctl) p-1 mt-4">
@@ -144,7 +86,7 @@ export default function Profile({ wide }: { wide: boolean }) {
             <Empty icon={tab === "fav" ? <IStar size={24} /> : <IClock size={24} />}
               title={tab === "fav" ? "还没有收藏" : "还没有观看记录"}
               sub={tab === "fav" ? "在剧集页点收藏，之后就能在这里找到" : "看过的剧集会出现在这里"}
-              action="去逛逛" onAction={() => push({ kind: "ranks" })} />
+              action="去逛逛" onAction={() => setAppTab("home")} />
           )}
           {cards.length > 0 && tab === "history" && (
             <button onClick={clearHistory} className="mt-3 w-full h-9 rounded-(--r-ctl) bg-s3 text-[12px] text-mut pressable">清空观看历史</button>

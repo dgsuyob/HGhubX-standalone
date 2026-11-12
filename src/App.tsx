@@ -1,19 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore, type Page, type Tab } from "./store";
-import { isMobile, selfTest } from "./api";
+import { isMobile } from "./api";
 import { exitApp, logLine, setTextInteraction } from "./platform";
 import { addPluginListener } from "@tauri-apps/api/core";
 import { runBack } from "./back";
 import Home from "./pages/Home";
-import Search, { RankPage } from "./pages/Search";
+import Search from "./pages/Search";
 import Category, { ChannelPage } from "./pages/Category";
 import Profile from "./pages/Profile";
 import SettingsPage from "./pages/Settings";
 import Feed from "./pages/Feed";
-import { PostsPage, PostDetail } from "./pages/Posts";
-import { TopicsPage, TopicPage, TagsPage, TagPage } from "./pages/Discover";
-import { FollowingPage, UserPage } from "./pages/User";
-import LoginModal from "./components/LoginModal";
+import { TagsPage, TagPage } from "./pages/Discover";
 import SourceGate from "./components/SourceGate";
 import { ToastHost } from "./components/ui";
 import { DesktopRail, DesktopTitleBar } from "./components/DesktopChrome";
@@ -107,16 +104,9 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
     );
   }
   if (page.kind === "channel") return <ChannelPage cate={page.cate} name={page.name} onBack={onBack} wide={wide} />;
-  if (page.kind === "ranks") return <RankPage onBack={onBack} wide={wide} />;
   if (page.kind === "settings") return <SettingsPage onBack={onBack} wide={wide} />;
-  if (page.kind === "posts") return <PostsPage onBack={onBack} wide={wide} />;
-  if (page.kind === "post") return <PostDetail id={page.id} onBack={onBack} active={top} />;
-  if (page.kind === "topics") return <TopicsPage onBack={onBack} wide={wide} />;
-  if (page.kind === "topic") return <TopicPage slug={page.slug} name={page.name} onBack={onBack} wide={wide} />;
   if (page.kind === "tags") return <TagsPage onBack={onBack} wide={wide} />;
   if (page.kind === "tag") return <TagPage tag={page.tag} name={page.name} onBack={onBack} wide={wide} />;
-  if (page.kind === "following") return <FollowingPage onBack={onBack} wide={wide} />;
-  if (page.kind === "user") return <UserPage id={page.id} name={page.name} onBack={onBack} wide={wide} />;
   return null;
 }
 
@@ -268,7 +258,7 @@ function MobileShell() {
 
 /* ============ 入口 ============ */
 export default function App() {
-  const { platform, loginOpen, setLoginOpen, tab, setTab, stack, pop, fs, setFs, gate, gateReady } = useStore();
+  const { platform, loginOpen, setLoginOpen, tab, setTab, stack, pop, fs, setFs, gate, gateReady, lineEpoch } = useStore();
   useEffect(() => {
     tracePlayback("navigation.change", { tab, stack: stack.map(p => ({ page: p.kind, key: p.key })), login_open: loginOpen });
   }, [tab, stack, loginOpen]);
@@ -331,14 +321,6 @@ export default function App() {
     return () => document.removeEventListener("contextmenu", prevent);
   }, []);
 
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    const t = window.setTimeout(() => {
-      selfTest().then((r) => { logLine(r); }).catch(() => {});
-    }, 2500);
-    return () => window.clearTimeout(t);
-  }, []);
-
   if (!gateReady) {
     return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
   }
@@ -348,8 +330,7 @@ export default function App() {
 
   return (
     <>
-      {isMobile ? <MobileShell /> : <DesktopShell />}
-      <LoginModal />
+      <div key={`${gate.id}:${lineEpoch}`} className="contents">{isMobile ? <MobileShell /> : <DesktopShell />}</div>
       <ToastHost />
       {/* 登录遮罩键盘处理占位 */}
       {loginOpen && <div className="hidden" onClick={() => setLoginOpen(false)} />}

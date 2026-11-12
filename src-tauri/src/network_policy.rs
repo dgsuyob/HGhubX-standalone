@@ -46,6 +46,10 @@ static STRICT: Lazy<AtomicBool> =
     Lazy::new(|| AtomicBool::new(cli_strict_override().unwrap_or(true)));
 static SECURITY_FILE: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
 
+pub fn enforce_security() {
+    STRICT.store(true, Ordering::Relaxed);
+}
+
 /// 当前是否启用严格安全模式（默认开启）。
 pub fn strict_security() -> bool {
     STRICT.load(Ordering::Relaxed)
