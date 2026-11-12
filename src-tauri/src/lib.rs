@@ -15,6 +15,7 @@ mod media_dns;
 mod net;
 mod network_policy;
 mod playback_log;
+mod ports;
 mod services;
 
 use tauri::Manager;

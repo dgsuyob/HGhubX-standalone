@@ -5,7 +5,9 @@ pub async fn gate_open(
     address: String,
     allow_private_network: Option<bool>,
 ) -> Result<GateState, String> {
-    source::gate_open(&address, allow_private_network.unwrap_or(false)).await
+    // 只保留 edge_v1 一个适配器：第二个参数保留以兼容旧前端调用，但不再参与分流。
+    let _ = allow_private_network;
+    source::gate_open(&address)
 }
 #[tauri::command]
 pub async fn gate_state() -> Result<GateState, String> {
@@ -28,7 +30,7 @@ pub async fn source_reload() -> Result<GateState, String> {
     if s.base.is_empty() {
         Ok(source::gate_state())
     } else {
-        source::gate_open(&s.base, s.allow_private_network).await
+        source::gate_open(&s.base)
     }
 }
 #[tauri::command]

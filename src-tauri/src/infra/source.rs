@@ -1,4 +1,6 @@
-//! Versioned user-selected libraries. Legacy site configurations remain inactive.
+//! 门牌（数据源）配置。当前唯一激活的适配器是 edge_v1：零校验激活，
+//! 填裸域名（如 huangguoai.com）即归一化成 `https://…/` 并接通 edge_v1 数据链。
+//! codex 分支的 manifest/playlist 激活代码暂不调用、暂不删，收口时再决定清理。
 use crate::adapters::playlist::{Manifest, MediaEpisode, MediaItem};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use dom_query::Document;
@@ -10,6 +12,7 @@ use std::{
     sync::RwLock,
 };
 pub const SOURCE_FILE: &str = "library-v2.json";
+pub const ADAPTER_EDGE_V1: &str = "edge_v1";
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 const DISCOVERY_PATHS: [&str; 3] = ["/.well-known/hghubx.json", "/hghubx.json", "/library.json"];
 const MAX_DISCOVERY_CANDIDATES: usize = 5;
@@ -38,7 +41,7 @@ pub struct SourceConfig {
     #[serde(default)]
     pub local_files: HashMap<u64, PathBuf>,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateState {
     pub id: String,
     pub name: String,
@@ -48,22 +51,54 @@ pub struct GateState {
     pub capabilities: Capabilities,
     pub allow_private_network: bool,
 }
+impl Default for GateState {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            base: String::new(),
+            adapter: ADAPTER_EDGE_V1.to_string(),
+            activated: false,
+            capabilities: Capabilities::default(),
+            allow_private_network: false,
+        }
+    }
+}
 impl SourceConfig {
     fn gate(&self) -> GateState {
+        let edge = self.adapter == ADAPTER_EDGE_V1;
         GateState {
             id: self.id.clone(),
-            name: self.manifest.name.clone(),
+            name: if edge {
+                String::new()
+            } else {
+                self.manifest.name.clone()
+            },
             base: self.base.clone(),
             adapter: self.adapter.clone(),
             activated: true,
             allow_private_network: self.allow_private_network,
-            capabilities: Capabilities {
-                catalog: true,
-                search: true,
-                categories: true,
-                related: true,
-                share: false,
-                ..Capabilities::default()
+            capabilities: if edge {
+                Capabilities {
+                    catalog: true,
+                    search: true,
+                    categories: true,
+                    related: true,
+                    account: true,
+                    comments: true,
+                    posts: true,
+                    remote_interactions: true,
+                    share: true,
+                }
+            } else {
+                Capabilities {
+                    catalog: true,
+                    search: true,
+                    categories: true,
+                    related: true,
+                    share: false,
+                    ..Capabilities::default()
+                }
             },
         }
     }
@@ -83,6 +118,20 @@ pub fn gate_state() -> GateState {
 pub fn base() -> String {
     current().map(|s| s.base).unwrap_or_default()
 }
+/// 判断某个请求 origin 是否就是当前门牌（用于凭据只发给当前源）。
+pub fn is_current_origin(origin: &str) -> bool {
+    let current = base();
+    if current.is_empty() {
+        return false;
+    }
+    let a = url::Url::parse(origin)
+        .ok()
+        .map(|u| u.origin().ascii_serialization());
+    let b = url::Url::parse(&current)
+        .ok()
+        .map(|u| u.origin().ascii_serialization());
+    a.is_some() && a == b
+}
 pub fn bind(dir: &Path) {
     let path = dir.join(SOURCE_FILE);
     if let Ok(bytes) = std::fs::read(&path) {
@@ -90,6 +139,7 @@ pub fn bind(dir: &Path) {
             if let Ok(mut c) = serde_json::from_slice::<SourceConfig>(&bytes) {
                 let valid = c.version == 2
                     && match c.adapter.as_str() {
+                        ADAPTER_EDGE_V1 => !c.base.trim().is_empty(),
                         "playlist_v1" => {
                             c.local_files.is_empty() && c.manifest.validate(None).is_ok()
                         }
@@ -313,18 +363,50 @@ async fn discover_manifest_from_html(
     Err("网站没有公开的媒体清单。请让网站声明清单，或直接输入 JSON 清单地址".into())
 }
 
-pub async fn gate_open(raw: &str, allow_private_network: bool) -> Result<GateState, String> {
-    let url = normalize_manifest_url(raw)?;
-    let response = crate::net::get_manifest(url.as_str(), allow_private_network).await?;
-    let (final_url, content_type, bytes) = read_remote_body(response).await?;
-    if let Some(manifest) = parse_manifest(&bytes) {
-        return activate_remote_manifest(manifest, &final_url, allow_private_network);
+/// 零校验规整：trim → 无协议补 `https://` → 补结尾 `/`。
+pub fn normalize_door(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
     }
-    if looks_like_html(&content_type, &bytes) {
-        let html = String::from_utf8_lossy(&bytes);
-        return discover_manifest_from_html(&html, &final_url, allow_private_network).await;
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let without_trailing = with_scheme.trim_end_matches('/');
+    format!("{without_trailing}/")
+}
+
+/// 激活门牌：任何非空输入都放行，不探活、不校验，直接存 `{base, adapter:"edge_v1"}`。
+/// codex 分支的 manifest/playlist 激活路径（上方各 helper）暂不调用、暂不删。
+pub fn gate_open(raw: &str) -> Result<GateState, String> {
+    let base = normalize_door(raw);
+    if base.is_empty() {
+        return Err("请输入接入地址".into());
     }
-    Err("响应不是有效的媒体清单 JSON，也不是可发现清单的 HTML 页面".into())
+    let state = save(SourceConfig {
+        version: 2,
+        id: "edge-v1".into(),
+        adapter: ADAPTER_EDGE_V1.into(),
+        base: base.clone(),
+        allow_private_network: false,
+        manifest: Manifest {
+            schema_version: 1,
+            id: String::new(),
+            name: String::new(),
+            items: Vec::new(),
+        },
+        local_files: HashMap::new(),
+    })?;
+    crate::playback_log::record(
+        "source.changed",
+        serde_json::json!({
+            "adapter": ADAPTER_EDGE_V1,
+            "host": url::Url::parse(&base).ok().and_then(|u| u.host_str().map(str::to_owned)),
+        }),
+    );
+    Ok(state)
 }
 pub fn import_manifest(text: &str, allow_private_network: bool) -> Result<GateState, String> {
     if text.len() > MAX_BYTES {
@@ -453,10 +535,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn imports_are_transactional_private_networking_is_opt_in_and_local_files_are_scoped() {
-        use std::io::{Read, Write};
+    async fn edge_gate_is_zero_validation_and_imports_stay_transactional_and_scoped() {
         let dir = std::env::temp_dir().join(format!(
-            "hghubx-library-test-{}-{}",
+            "hghubx-edge-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -464,105 +545,24 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let legacy = dir.join("source.json");
-        std::fs::write(
-            &legacy,
-            r#"{"base":"https://example.com/old-site","adapter":"edge_v1"}"#,
-        )
-        .unwrap();
         bind(&dir);
-        assert!(
-            !gate_state().activated,
-            "Legacy addresses must not activate"
-        );
-        let manifest=serde_json::json!({"schema_version":1,"id":"owned","name":"Owned","items":[{"id":1,"title":"Clip","episodes":[{"url":"https://media.example.com/owned.mp4"}]}]}).to_string();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = format!(
-            "http://{}/library.json?token=one",
-            listener.local_addr().unwrap()
-        );
-        let body = manifest.clone();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let mut request = [0u8; 4096];
-            let _ = stream.read(&mut request).unwrap();
-            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
-        });
-        assert!(
-            crate::net::get_manifest(&address, false).await.is_err(),
-            "Private addresses require explicit permission"
-        );
-        let remote = gate_open(&address, true).await.unwrap();
-        server.join().unwrap();
-        assert!(remote.activated && remote.allow_private_network);
-        assert!(!remote.capabilities.account && !remote.capabilities.comments);
 
-        let discovery_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let discovery_address = format!("http://{}/", discovery_listener.local_addr().unwrap());
-        let discovery_manifest = serde_json::json!({
-            "schema_version": 1,
-            "id": "discovered",
-            "name": "Discovered",
-            "items": [{
-                "id": 1,
-                "title": "Web Clip",
-                "episodes": [{"url": "owned.mp4"}]
-            }]
-        })
-        .to_string();
-        let discovery_server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = discovery_listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                    .unwrap();
-                let mut request = [0u8; 4096];
-                let read = stream.read(&mut request).unwrap();
-                let request = String::from_utf8_lossy(&request[..read]);
-                let path = request
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_ascii_whitespace().nth(1))
-                    .unwrap();
-                let (content_type, body) = if path == "/declared.json" {
-                    ("application/json", discovery_manifest.as_str())
-                } else {
-                    (
-                        "text/html",
-                        r#"<!doctype html><link rel="alternate" type="application/vnd.hghubx.manifest+json" href="/declared.json">"#,
-                    )
-                };
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-            }
-        });
-        let discovered = gate_open(&discovery_address, true).await.unwrap();
-        discovery_server.join().unwrap();
-        assert_eq!(discovered.name, "Discovered");
-        assert_eq!(
-            discovered.base,
-            format!(
-                "http://{}/declared.json",
-                discovery_address
-                    .trim_start_matches("http://")
-                    .trim_end_matches('/')
-            )
-        );
-        assert!(discovered.id.starts_with("url:"));
+        // 零校验激活：任意非空输入放行，归一化成 edge_v1 门牌。
+        let door = gate_open(" example.com ").unwrap();
+        assert!(door.activated);
+        assert_eq!(door.base, "https://example.com/");
+        assert_eq!(door.adapter, ADAPTER_EDGE_V1);
+        assert_eq!(gate_state().base, "https://example.com/");
+        assert!(gate_open("   ").is_err());
 
+        // 清单/本机导入保持事务性：解析失败不落盘。
+        let manifest = serde_json::json!({"schema_version":1,"id":"owned","name":"Owned","items":[{"id":1,"title":"Clip","episodes":[{"url":"https://media.example.com/owned.mp4"}]}]}).to_string();
         let saved = std::fs::read(dir.join(SOURCE_FILE)).unwrap();
         assert!(import_manifest("{", false).is_err());
-        assert_eq!(gate_state().id, discovered.id);
         assert_eq!(std::fs::read(dir.join(SOURCE_FILE)).unwrap(), saved);
+
         let imported = import_manifest(&manifest, false).unwrap();
-        assert_ne!(discovered.id, imported.id);
+        assert_eq!(imported.name, "Owned");
         let clip = dir.join("my-video.mp4");
         let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/demo.mp4"));
         std::fs::write(&clip, bytes).unwrap();
@@ -578,6 +578,7 @@ mod tests {
         assert_eq!(response.status().as_u16(), 206);
         assert_eq!(response.body().as_slice(), &bytes[2..10]);
         gate_reset().unwrap();
+        assert!(!gate_state().activated);
         assert_eq!(
             crate::media::handle(
                 "/local",
@@ -590,10 +591,22 @@ mod tests {
             .as_u16(),
             416
         );
-        assert!(legacy.exists(), "Migration must preserve legacy files");
         *SOURCE_PATH.write().unwrap() = None;
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    #[test]
+    fn door_normalization_is_zero_validation() {
+        assert_eq!(normalize_door(" example.com "), "https://example.com/");
+        assert_eq!(normalize_door("https://example.com"), "https://example.com/");
+        assert_eq!(
+            normalize_door("https://example.com/path/?x=1"),
+            "https://example.com/path/?x=1/"
+        );
+        assert_eq!(normalize_door("不会解析的地址"), "https://不会解析的地址/");
+        assert_eq!(normalize_door("   "), "");
+    }
+
     #[test]
     fn urls_keep_path_and_query() {
         assert_eq!(
