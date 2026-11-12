@@ -634,9 +634,9 @@ mod tests {
             [
                 "https://example.com/catalog/one.json",
                 "https://example.com/two.json",
-                "https://example.com/catalog/three.json",
                 "https://example.com/catalog/five.json",
                 "https://example.com/catalog/six.json",
+                "https://example.com/catalog/three.json",
             ]
         );
         assert_eq!(
