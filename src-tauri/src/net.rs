@@ -331,8 +331,8 @@ async fn client_for_dns(raw: &str, public_dns: bool) -> Result<(url::Url, Arc<re
     } else if public_dns {
         let resolver = build_client(crate::media_dns::HOST, &crate::media_dns::BOOTSTRAP)?;
         let resolution = crate::media_dns::resolve(&resolver, host, port).await?;
-        network_policy::check_addresses_with_mode(&resolution.addresses, strict)?;
-        (resolution.addresses, CLIENT_TTL.min(resolution.ttl))
+        let addrs = network_policy::filter_addresses_with_mode(&resolution.addresses, strict)?;
+        (addrs, CLIENT_TTL.min(resolution.ttl))
     } else if strict {
         (network_policy::resolve_target(&target, strict).await?, CLIENT_TTL)
     } else {
@@ -524,6 +524,9 @@ fn ipv4_kind(o: [u8; 4]) -> &'static str {
 }
 
 fn ip_kind(ip: std::net::IpAddr) -> &'static str {
+    if !network_policy::allowed_ip(ip) {
+        return "reserved";
+    }
     match ip {
         std::net::IpAddr::V4(v4) => ipv4_kind(v4.octets()),
         std::net::IpAddr::V6(v6) => {
@@ -550,6 +553,9 @@ fn dns_report(addrs: &[SocketAddr], ms: u128) -> Value {
     ips.sort_unstable();
     ips.dedup();
     let mut kinds: Vec<&str> = ips.iter().map(|ip| ip_kind(*ip)).collect();
+    if ips.iter().any(|ip| !network_policy::allowed_ip(*ip)) {
+        kinds.push("blocked_by_policy");
+    }
     kinds.sort_unstable();
     kinds.dedup();
     let suspicious: Vec<String> = ips
@@ -557,10 +563,17 @@ fn dns_report(addrs: &[SocketAddr], ms: u128) -> Value {
         .filter(|ip| ip_kind(**ip) != "public")
         .map(|ip| ip.to_string())
         .collect();
+    let blocked: Vec<String> = ips
+        .iter()
+        .filter(|ip| !network_policy::allowed_ip(**ip))
+        .map(|ip| ip.to_string())
+        .collect();
     json!({
         "ms": ms as u64,
         "count": ips.len(),
         "has_fake_ip": kinds.contains(&"fake_ip"),
+        "has_blocked_ip": !blocked.is_empty(),
+        "blocked_by_policy": blocked,
         "kinds": kinds,
         "suspicious": suspicious,
     })
@@ -598,6 +611,10 @@ async fn tcp_probe(addr: Option<SocketAddr>, timeout: Duration) -> Value {
 fn verdict(dns: &Value, tcp: &Value, http: &Value) -> (&'static str, String, Vec<String>) {
     let dns_err = dns.get("error").and_then(|v| v.as_str());
     let fake = dns.get("has_fake_ip").and_then(|v| v.as_bool()).unwrap_or(false);
+    let blocked = dns
+        .get("has_blocked_ip")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let kinds = dns.get("kinds").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let suspicious = dns.get("suspicious").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let status = http.get("status").and_then(|v| v.as_u64());
@@ -621,6 +638,35 @@ fn verdict(dns: &Value, tcp: &Value, http: &Value) -> (&'static str, String, Vec
                 "换网络对比：Wi-Fi 与流量互切".into(),
                 "安卓「私有 DNS」改为自动，或填 223.5.5.5 / 1.1.1.1".into(),
             ],
+        );
+    }
+    if blocked && http_err.contains("禁止访问普通内网") {
+        let addresses = dns
+            .get("blocked_by_policy")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        return (
+            "dns_policy_denied",
+            format!(
+                "DNS 返回的地址不符合严格安全策略，连接已阻止：{}",
+                addresses
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            vec![
+                "检查 VPN / 代理的 DNS 设置，关闭 TUN 后重新诊断".into(),
+                "若这是 IPv6-only 网络，请换网络对比；当前诊断已列出被拒绝地址".into(),
+            ],
+        );
+    }
+    if blocked && status.is_none() {
+        return (
+            "dns_filtered",
+            "DNS 同时返回了不符合严格安全策略的地址；请求只会使用通过校验的地址".into(),
+            vec!["如仍无法连接，关闭 VPN / 代理 TUN 或换网络后重试".into()],
         );
     }
     if fake {
@@ -1214,6 +1260,45 @@ mod tests {
             dns_summary(Vec::<SocketAddr>::new()),
             json!({"count":0,"has_fake_ip":false})
         );
+    }
+
+    #[test]
+    fn dns_report_names_addresses_rejected_by_the_strict_policy() {
+        let addrs: Vec<SocketAddr> = [
+            "1.1.1.1:443",
+            "198.18.0.10:443",
+            "[64:ff9b::c0a8:101]:443",
+        ]
+        .into_iter()
+        .map(|raw| raw.parse().unwrap())
+        .collect();
+        let report = dns_report(&addrs, 1);
+        assert_eq!(report["has_fake_ip"], true);
+        assert_eq!(report["has_blocked_ip"], true);
+        assert_eq!(report["blocked_by_policy"], json!(["64:ff9b::c0a8:101"]));
+        assert_eq!(
+            report["kinds"],
+            json!(["blocked_by_policy", "fake_ip", "public", "reserved"])
+        );
+
+        let (code, summary, _) = verdict(
+            &report,
+            &json!({"ok": true}),
+            &json!({"error": "禁止访问普通内网、回环或保留地址"}),
+        );
+        assert_eq!(code, "dns_policy_denied");
+        assert!(summary.contains("64:ff9b::c0a8:101"));
+    }
+
+    #[test]
+    fn private_dns_answer_is_filtered_when_public_address_exists() {
+        let addrs: Vec<SocketAddr> = ["1.1.1.1:443", "192.168.1.2:443"]
+            .into_iter()
+            .map(|raw| raw.parse().unwrap())
+            .collect();
+        let report = dns_report(&addrs, 1);
+        let (code, _, _) = verdict(&report, &json!({}), &json!({}));
+        assert_eq!(code, "dns_filtered");
     }
 
     #[test]

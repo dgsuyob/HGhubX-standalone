@@ -112,8 +112,18 @@ pub fn allowed_ip(ip: IpAddr) -> bool {
             if let Some(v4) = ip.to_ipv4_mapped() {
                 return allowed_ip(IpAddr::V4(v4));
             }
+            // RFC 6052 well-known prefix. Accept only translations of public IPv4
+            // targets; this keeps IPv6-only networks working without opening private hosts.
+            let octets = ip.octets();
+            if octets[..12] == [
+                0x00, 0x64, 0xff, 0x9b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ] {
+                return allowed_ip(IpAddr::V4(std::net::Ipv4Addr::from([
+                    octets[12], octets[13], octets[14], octets[15],
+                ])));
+            }
             let s = ip.segments();
-            // 仅全球单播；拒绝 ULA、链路本地、回环、组播、NAT64，以及可封装私网 IPv4 的 6to4/Teredo。
+            // 仅全球单播；拒绝 ULA、链路本地、回环、组播，以及可封装私网 IPv4 的 6to4/Teredo。
             (s[0] & 0xe000) == 0x2000
                 && s[0] != 0x2002
                 && !(s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8))
@@ -172,16 +182,32 @@ pub fn check_addresses(addrs: &[SocketAddr]) -> Result<(), String> {
 }
 
 pub fn check_addresses_with_mode(addrs: &[SocketAddr], strict: bool) -> Result<(), String> {
+    filter_addresses_with_mode(addrs, strict).map(|_| ())
+}
+
+pub(crate) fn filter_addresses_with_mode(
+    addrs: &[SocketAddr],
+    strict: bool,
+) -> Result<Vec<SocketAddr>, String> {
     if addrs.is_empty() {
         return Err("目标没有可用的 DNS 地址".into());
     }
-    if strict {
-        // 混合公私网答案整体拒绝，不能让连接器回退到私网地址。
-        for addr in addrs {
-            check_ip(addr.ip())?;
-        }
+    let usable: Vec<_> = addrs
+        .iter()
+        .copied()
+        .filter(|addr| !strict || allowed_ip(addr.ip()))
+        .collect();
+    if usable.is_empty() {
+        let rejected = addrs
+            .iter()
+            .find(|addr| !allowed_ip(addr.ip()))
+            .map(|addr| addr.ip().to_string())
+            .unwrap_or_default();
+        return Err(format!(
+            "禁止访问普通内网、回环或保留地址（仅放行 FakeIP 198.18.0.0/15）：{rejected}"
+        ));
     }
-    Ok(())
+    Ok(usable)
 }
 
 /// 与浏览器一致优先 IPv6：连接器以首个地址的协议族为首选，另一族在其失败后（Happy Eyeballs）兜底。
@@ -207,7 +233,7 @@ pub async fn resolve_target(url: &Url, strict: bool) -> Result<Vec<SocketAddr>, 
     };
     sort_ipv6_first(&mut addrs);
     addrs.dedup();
-    check_addresses_with_mode(&addrs, strict)?;
+    addrs = filter_addresses_with_mode(&addrs, strict)?;
     Ok(addrs)
 }
 
@@ -280,6 +306,7 @@ mod tests {
             "198.19.255.255",
             "2606:4700:4700::1111",
             "::ffff:198.18.0.1",
+            "64:ff9b::808:808",
         ] {
             assert!(allowed_ip(ip.parse().unwrap()), "{ip}");
         }
@@ -311,6 +338,7 @@ mod tests {
             "::ffff:127.0.0.1",
             "::ffff:192.168.1.1",
             "64:ff9b::c0a8:101",
+            "64:ff9b::a00:1",
             "2002:c0a8:101::1",
             "2001::1",
             "2001:db8::1",
@@ -351,12 +379,17 @@ mod tests {
     }
 
     #[test]
-    fn mixed_dns_and_redirect_bypasses_are_blocked() {
+    fn mixed_dns_filters_unsafe_answers_and_redirect_bypasses_are_blocked() {
         let addrs = [
             "1.1.1.1:443".parse().unwrap(),
             "192.168.1.1:443".parse().unwrap(),
         ];
-        assert!(check_addresses(&addrs).is_err());
+        assert!(check_addresses(&addrs).is_ok());
+        assert_eq!(
+            filter_addresses_with_mode(&addrs, true).unwrap(),
+            vec!["1.1.1.1:443".parse().unwrap()]
+        );
+        assert!(check_addresses(&addrs[1..]).is_err());
         assert!(check_addresses(&[]).is_err());
         let current = Url::parse("https://example.com/media").unwrap();
         assert!(redirect_target(&current, "//127.0.0.1/private").is_err());
@@ -366,6 +399,29 @@ mod tests {
             redirect_target(&current, "/next").unwrap().as_str(),
             "https://example.com/next"
         );
+    }
+
+    #[test]
+    fn strict_resolution_uses_only_safe_addresses_from_mixed_dns_answers() {
+        let addrs: Vec<SocketAddr> = [
+            "192.168.1.1:443",
+            "[64:ff9b::a00:1]:443",
+            "1.1.1.1:443",
+            "198.18.0.10:443",
+        ]
+        .into_iter()
+        .map(|raw| raw.parse().unwrap())
+        .collect();
+        let safe = filter_addresses_with_mode(&addrs, true).unwrap();
+        assert_eq!(
+            safe,
+            vec![
+                "1.1.1.1:443".parse().unwrap(),
+                "198.18.0.10:443".parse().unwrap(),
+            ]
+        );
+        assert!(filter_addresses_with_mode(&addrs[..2], true).is_err());
+        assert_eq!(filter_addresses_with_mode(&addrs, false).unwrap(), addrs);
     }
 
     #[test]
